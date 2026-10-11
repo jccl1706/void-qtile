@@ -231,6 +231,113 @@ if (( fail > 0 )); then
     fi
 fi
 
+# =============================================================================
+# The package list, and proving every name in it exists
+#
+# RESOLVED BEFORE THE DISK IS TOUCHED, because the alternative is discovering a
+# renamed or mistyped package in the middle of a transaction, on a disk that
+# has already been wiped. The sibling Fedora installer grew the same check
+# after a wizard branch referred to a package that had never existed under that
+# name, and it is the cheapest check in this script: it reads repository
+# metadata and changes nothing.
+#
+# It does NOT prove a package will install - a broken build or a missing
+# dependency at install time still gets through. It proves the NAME resolves,
+# which is the failure this script is actually capable of causing by itself.
+# =============================================================================
+base=(
+    base-system
+    # The pieces this layout cannot boot without. base-system does not imply
+    # them: an installer that leaves these out produces a system that installs
+    # cleanly and then cannot find its own root.
+    cryptsetup
+    btrfs-progs
+    grub-x86_64-efi
+    dracut
+    # Firmware. Without linux-firmware-amd the GPU does not initialise, and
+    # without the network firmware the MT7922 wifi is detected and useless.
+    linux-firmware
+    linux-firmware-amd
+    linux-firmware-network
+    # Microcode, which is not optional on a CPU this new.
+    # (Void ships AMD microcode inside linux-firmware-amd.)
+    NetworkManager
+    elogind
+    dbus
+    polkit
+    sudo
+    git
+    vim
+    curl
+    # ZRAM, AND NOT AS AN OPTION. This machine has no swap partition and no
+    # hibernation by design, which makes compressed swap in RAM the ONLY memory
+    # valve it has - without it the kernel has nowhere to put an anonymous page
+    # and skips straight to killing something.
+    #
+    # The sibling Fedora installer got this wrong in exactly the way that is
+    # easy to get wrong: zram-generator-defaults was gated behind
+    # `[[ -n "$zram_size" ]]`, and $zram_size was empty by default, so every
+    # ordinary install - and every --swap none install, which is what a machine
+    # that must not hibernate gets - came up with no swap of any kind. Found
+    # months later on a 54 GiB machine with zero swap devices. Unconditional
+    # here, and asserted in the verification pass, so the same mistake cannot
+    # be made quietly twice.
+    zramen
+    # EARLYOOM, the companion to a swapless machine. zram is a valve, not extra
+    # memory: once it is full the kernel has nowhere left to go, and the
+    # in-kernel OOM killer acts so late that the machine has usually already
+    # spent a minute unresponsive. earlyoom watches from userspace and kills
+    # the worst offender while there is still enough memory to do it cleanly.
+    earlyoom
+    # --- the desktop ---------------------------------------------------------
+    #
+    # qtile ALONE IS X11-ONLY. Void splits the Wayland backend into the
+    # qtile-wayland subpackage, which carries libqtile/backend/wayland and the
+    # session entry - install only `qtile` and `qtile start -b wayland` has no
+    # backend to start. It pulls xorg-server-xwayland for X11 clients and wants
+    # a sans-serif font, hence dejavu.
+    qtile
+    foot
+    wl-clipboard
+    dejavu-fonts-ttf
+    # SSHD, so that a session that will not start is an inconvenience rather
+    # than a reinstall. On a machine being set up for a brand new window
+    # manager this is not optional equipment.
+    openssh
+)
+
+# The backend decides what else is needed. Wayland needs nothing beyond
+# qtile-wayland; X11 needs an actual X server and something to start it.
+case "$backend" in
+    wayland) base+=(qtile-wayland) ;;
+    x11)     base+=(xorg-minimal xorg-server xinit xrandr xsetroot) ;;
+esac
+
+log "Resolving every package name against the repo"
+if command -v xbps-query >/dev/null 2>&1; then
+    missing=()
+    for pkg in "${base[@]}"; do
+        if XBPS_ARCH="$ARCH" xbps-query -R --repository="$REPO" -S "$pkg" >/dev/null 2>&1; then
+            printf '    %sok%s      %s\n' "$c_g" "$c_0" "$pkg"
+        else
+            printf '    %sFAIL%s    %s\n' "$c_r" "$c_0" "$pkg"
+            missing+=("$pkg")
+        fi
+    done
+    if (( ${#missing[@]} > 0 )); then
+        if $dry_run; then
+            warn "${#missing[@]} package name(s) did not resolve - continuing, this is a dry run"
+        else
+            die "${#missing[@]} package name(s) did not resolve: ${missing[*]}"
+        fi
+    else
+        log "${#base[@]}/${#base[@]} package names resolved"
+    fi
+else
+    warn "xbps-query not present - cannot resolve package names"
+    $dry_run || die "refusing to wipe a disk without checking the package list first"
+fi
+
 if $preflight_only; then
     log "Preflight only - stopping here"
     exit 0
@@ -347,51 +454,7 @@ log "Installing the base system"
 run mkdir -p /mnt/var/db/xbps/keys
 run_sh "cp /var/db/xbps/keys/* /mnt/var/db/xbps/keys/"
 
-base=(
-    base-system
-    # The pieces this layout cannot boot without. base-system does not imply
-    # them: an installer that leaves these out produces a system that installs
-    # cleanly and then cannot find its own root.
-    cryptsetup
-    btrfs-progs
-    grub-x86_64-efi
-    dracut
-    # Firmware. Without linux-firmware-amd the GPU does not initialise, and
-    # without the network firmware the MT7922 wifi is detected and useless.
-    linux-firmware
-    linux-firmware-amd
-    linux-firmware-network
-    # Microcode, which is not optional on a CPU this new.
-    # (Void ships AMD microcode inside linux-firmware-amd.)
-    NetworkManager
-    elogind
-    dbus
-    polkit
-    sudo
-    git
-    vim
-    curl
-    # ZRAM, AND NOT AS AN OPTION. This machine has no swap partition and no
-    # hibernation by design, which makes compressed swap in RAM the ONLY memory
-    # valve it has - without it the kernel has nowhere to put an anonymous page
-    # and skips straight to killing something.
-    #
-    # The sibling Fedora installer got this wrong in exactly the way that is
-    # easy to get wrong: zram-generator-defaults was gated behind
-    # `[[ -n "$zram_size" ]]`, and $zram_size was empty by default, so every
-    # ordinary install - and every --swap none install, which is what a machine
-    # that must not hibernate gets - came up with no swap of any kind. Found
-    # months later on a 54 GiB machine with zero swap devices. Unconditional
-    # here, and asserted in the verification pass, so the same mistake cannot
-    # be made quietly twice.
-    zramen
-    # EARLYOOM, the companion to a swapless machine. zram is a valve, not extra
-    # memory: once it is full the kernel has nowhere left to go, and the
-    # in-kernel OOM killer acts so late that the machine has usually already
-    # spent a minute unresponsive. earlyoom watches from userspace and kills
-    # the worst offender while there is still enough memory to do it cleanly.
-    earlyoom
-)
+
 
 run_sh "XBPS_ARCH=$ARCH xbps-install -Sy -r /mnt -R '$REPO' ${base[*]}"
 
@@ -576,6 +639,84 @@ write_file /mnt/etc/sv/earlyoom/conf <<'EOCONF'
 OPTS="-m 10 -M 2097152 -s 10 --syslog --avoid '^(qtile|Xwayland|sshd|dbus-daemon|elogind|runsvdir|runit)$' --prefer '^(chromium|firefox|electron|node|cc1plus|rustc|ld)$'"
 EOCONF
 
+# --- elogind in PAM -----------------------------------------------------------
+#
+# WITHOUT THIS THERE IS NO XDG_RUNTIME_DIR AND NO WAYLAND SESSION. elogind
+# creates /run/user/$UID through its PAM session module, and a user cannot
+# create that directory themselves - /run/user is root-owned - so a fallback in
+# the shell profile is not an option either. The session simply fails with
+# "XDG_RUNTIME_DIR not set".
+#
+# Added explicitly rather than assumed: whether a distribution wires this up by
+# default is exactly the kind of thing that is true until it is not, and the
+# cost of checking is one grep.
+log "Wiring elogind into PAM"
+if ! $dry_run; then
+    if ! grep -q pam_elogind /mnt/etc/pam.d/system-login 2>/dev/null; then
+        printf 'session  optional  pam_elogind.so\n' >> /mnt/etc/pam.d/system-login
+        note "added pam_elogind.so to system-login"
+    else
+        note "already present"
+    fi
+else
+    note "would add pam_elogind.so to /etc/pam.d/system-login if absent"
+fi
+
+# --- autologin on tty1 --------------------------------------------------------
+#
+# The same arrangement as the sibling Fedora machine: no display manager at
+# all. A display manager on a single-user laptop whose disk is already
+# encrypted asks for a second password to protect nothing - the LUKS passphrase
+# is the gate, and it has already been typed by this point.
+#
+# --noclear is kept from Void's own default; losing it means the boot messages
+# are wiped before they can be read, which is the opposite of helpful on a
+# machine still being built.
+log "Enabling autologin for $username on tty1"
+write_file /mnt/etc/sv/agetty-tty1/conf <<AGETTY
+# Written by install_void.sh.
+#
+# Autologin, because there is no display manager: the LUKS passphrase is the
+# gate and it has already been answered by the time this runs.
+GETTY_ARGS="--noclear --autologin $username"
+BAUD_RATE=38400
+TERM_NAME=linux
+AGETTY
+
+# --- the session -------------------------------------------------------------
+#
+# ON tty1 ONLY, AND THAT GUARD IS THE IMPORTANT PART. A profile that starts a
+# compositor unconditionally starts one down an ssh connection too, where it
+# fails, taking the login with it - so the one route in that still works when
+# the session is broken would break along with it.
+#
+# `exec` so the compositor replaces the shell: without it, quitting qtile drops
+# to a logged-in shell on tty1, which is a session nobody asked for.
+#
+# dbus-run-session rather than bare qtile, because a Wayland desktop talks to
+# dbus constantly - portals, notifications, polkit agents - and starting
+# without a session bus leaves all of it half working in ways that look like
+# unrelated bugs.
+log "Writing the session startup"
+if [[ "$backend" == wayland ]]; then
+    session_cmd='exec dbus-run-session qtile start -b wayland'
+else
+    session_cmd='exec startx /usr/bin/qtile start -b x11'
+fi
+
+write_file "/mnt/home/$username/.bash_profile" <<PROFILE
+# Written by install_void.sh.
+[ -f ~/.bashrc ] && . ~/.bashrc
+
+# Start the desktop on tty1 and NOWHERE ELSE. An ssh login, or any other tty,
+# must fall through to a plain shell: if this ran everywhere, a session that
+# will not start would also break the way back in to fix it.
+if [ "\$(tty)" = "/dev/tty1" ] && [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ]; then
+    $session_cmd
+fi
+PROFILE
+run chown "1000:1000" "/mnt/home/$username/.bash_profile"
+
 # =============================================================================
 # Services
 #
@@ -585,7 +726,7 @@ EOCONF
 # =============================================================================
 log "Enabling runit services"
 
-services=(dbus elogind NetworkManager polkitd zramen earlyoom)
+services=(dbus elogind NetworkManager polkitd zramen earlyoom sshd agetty-tty1)
 for s in "${services[@]}"; do
     xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s /var/service/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
@@ -645,6 +786,17 @@ vcheck "earlyoom installed"          '[[ -x /mnt/usr/bin/earlyoom ]]'
 vcheck "earlyoom service enabled"    '[[ -L /mnt/var/service/earlyoom ]]'
 vcheck "earlyoom capped at 2GiB"     'grep -q "M 2097152" /mnt/etc/sv/earlyoom/conf'
 vcheck "earlyoom protects qtile"     'grep -q "avoid.*qtile" /mnt/etc/sv/earlyoom/conf'
+vcheck "qtile installed"             '[[ -x /mnt/usr/bin/qtile ]]'
+# The backend is a DIRECTORY inside libqtile, not a flag: if qtile-wayland was
+# missing this passes every other check and then fails at `qtile start`.
+vcheck "qtile wayland backend"       "$([[ $backend == wayland ]] && echo 'compgen -G "/mnt/usr/lib/python3*/site-packages/libqtile/backend/wayland"' || echo true)"
+vcheck "a terminal exists"           '[[ -x /mnt/usr/bin/foot ]]'
+vcheck "sshd installed"              '[[ -x /mnt/usr/bin/sshd ]]'
+vcheck "sshd service enabled"        '[[ -L /mnt/var/service/sshd ]]'
+vcheck "autologin configured"        "grep -q 'autologin $username' /mnt/etc/sv/agetty-tty1/conf"
+vcheck "agetty-tty1 enabled"         '[[ -L /mnt/var/service/agetty-tty1 ]]'
+vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
+vcheck "pam_elogind wired up"        'grep -q pam_elogind /mnt/etc/pam.d/system-login'
 
 echo
 if (( vfail > 0 )); then
@@ -658,5 +810,4 @@ note "The target is still mounted at /mnt."
 note "To finish:  umount -R /mnt && cryptsetup close cryptroot && reboot"
 echo
 note "Still to do after first boot (not yet written):"
-note "  - qtile and the $backend session"
 note "  - the dotfiles"
