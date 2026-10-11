@@ -1,0 +1,40 @@
+# Written by install_void.sh.
+[ -f ~/.bashrc ] && . ~/.bashrc
+
+# Start the desktop on tty1 and NOWHERE ELSE. An ssh login, or any other tty,
+# must fall through to a plain shell: if this ran everywhere, a session that
+# will not start would also break the way back in to fix it.
+# The cursor, which is a few millimetres across without this: wlroots
+# defaults to 24px and this panel is 200 DPI. There is no qtile setting for
+# it - the Wayland backend reads XCURSOR_* from the environment at startup.
+# 32 at scale 1.5 is a 48px bitmap. Adwaita is the only theme on a fresh
+# install that ships cursors at all.
+export XCURSOR_THEME=Bibata-Modern-Classic
+export XCURSOR_SIZE=28
+
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ]; then
+    # LOGGED, BECAUSE A SESSION THAT DIES MUST LEAVE A REASON BEHIND. Without
+    # this the compositor's own error scrolls past on tty1 and agetty respawns
+    # immediately - a login loop that says nothing about what failed, with the
+    # evidence gone by the time anybody looks.
+    mkdir -p ~/.local/state
+    exec >> ~/.local/state/session.log 2>&1
+    echo "=== session starting $(date -Is) on $(tty)"
+    # XDG_CURRENT_DESKTOP, WITHOUT WHICH THE PORTAL ANSWERS NOTHING USEFUL.
+    # A GTK app asks xdg-desktop-portal whether to be light or dark; the portal
+    # picks a BACKEND by matching this name against the UseIn= lines in
+    # /usr/share/xdg-desktop-portal/portals/*.portal. qtile sets none and is in
+    # nobody's list, so no backend was selected and color-scheme came back 0,
+    # "no preference", however prefer-dark gsettings held. Firefox then renders
+    # light beside an entirely correct GTK config.
+    #
+    # It also names which <desktop>-portals.conf is read:
+    # ~/.config/xdg-desktop-portal/qtile-portals.conf, from this repo.
+    #
+    # EXPORTED BEFORE THE exec so the bus and everything it activates inherit
+    # it - a portal started by D-Bus activation gets the bus's environment, not
+    # a shell's.
+    export XDG_CURRENT_DESKTOP=qtile
+
+    exec dbus-run-session qtile start -b wayland
+fi

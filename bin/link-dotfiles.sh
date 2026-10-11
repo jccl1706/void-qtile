@@ -50,6 +50,7 @@ LINKS=(
     "gtk/settings.ini     $CONFIG/gtk-4.0/settings.ini"
     "gtk/gtk.css          $CONFIG/gtk-3.0/gtk.css"
     "gtk/gtk.css          $CONFIG/gtk-4.0/gtk.css"
+    "portal/qtile-portals.conf  $CONFIG/xdg-desktop-portal/qtile-portals.conf"
 )
 
 link_one() {

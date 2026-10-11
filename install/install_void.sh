@@ -1086,6 +1086,18 @@ write_file "/mnt/home/$username/.bash_profile" <<PROFILE
 # Start the desktop on tty1 and NOWHERE ELSE. An ssh login, or any other tty,
 # must fall through to a plain shell: if this ran everywhere, a session that
 # will not start would also break the way back in to fix it.
+# XDG_CURRENT_DESKTOP, WITHOUT WHICH THE PORTAL ANSWERS NOTHING USEFUL.
+# xdg-desktop-portal chooses a backend by matching this against the UseIn=
+# lines in /usr/share/xdg-desktop-portal/portals/*.portal. qtile sets none and
+# appears in nobody's list, so no backend is selected and
+# org.freedesktop.appearance color-scheme comes back 0 ("no preference")
+# regardless of gsettings - which is why Firefox renders light on a desktop
+# whose GTK config is entirely correct.
+#
+# The name also decides which <desktop>-portals.conf is read; ours is
+# portal/qtile-portals.conf, linked by bin/link-dotfiles.sh.
+export XDG_CURRENT_DESKTOP=qtile
+
 # NO XCURSOR_* IS EXPORTED HERE, AND AN EARLIER VERSION DID IT WRONGLY.
 #
 # It set XCURSOR_THEME and XCURSOR_SIZE from this file, with a comment saying
@@ -1316,6 +1328,7 @@ vcheck "password method is set"      'grep -qE "^ENCRYPT_METHOD SHA512" /mnt/etc
 vcheck "timezone is set"             '[[ -L /mnt/etc/localtime ]]'
 vcheck "a time daemon is enabled"    '[[ -L /mnt/etc/runit/runsvdir/default/chronyd ]]'
 vcheck "dconf present (GTK dark)"    '[[ -x /mnt/usr/bin/dconf ]]'
+vcheck "portal knows the desktop"    "grep -q 'XDG_CURRENT_DESKTOP=qtile' /mnt/home/$username/.bash_profile"
 if [[ -n "$authorized_key" ]]; then
     vcheck "authorized key installed" "[[ -s /mnt/home/$username/.ssh/authorized_keys ]]"
 fi
