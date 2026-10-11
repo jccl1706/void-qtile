@@ -6,6 +6,8 @@ one backend cannot break the other: Systray is X11-only, and on Wayland it has
 to be left out rather than merely misconfigured.
 """
 
+import os
+
 from libqtile import bar, widget
 from libqtile.config import Screen
 
@@ -27,7 +29,16 @@ def status_widgets():
         else widget.Spacer(length=0),
         widget.CPU(**WIDGET_DEFAULTS, format="cpu {load_percent:.0f}%"),
         widget.Memory(**WIDGET_DEFAULTS, format="mem {MemPercent:.0f}%"),
-        widget.ThermalZone(**WIDGET_DEFAULTS, fgcolor_normal=FG),
+        # ONLY IF THERE IS A THERMAL ZONE TO READ. In a VM there is none, and
+        # the widget does not degrade - it raises
+        #
+        #     FileNotFoundError: '/sys/class/thermal/thermal_zone0/temp'
+        #
+        # which takes the whole bar down with it. The laptop has one; a VM, a
+        # container, and some desktops do not, and a config that only works on
+        # the machine it was written on is not much of a config.
+        *([widget.ThermalZone(**WIDGET_DEFAULTS, fgcolor_normal=FG)]
+          if os.path.exists("/sys/class/thermal/thermal_zone0/temp") else []),
         # The one thing a bar on a laptop must tell you is how long it has
         # left, so this reports time remaining and not just a percentage.
         widget.Battery(

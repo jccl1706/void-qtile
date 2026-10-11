@@ -87,7 +87,19 @@ unattended=false
 # Using either one prints a warning that names the file, so a real install
 # driven this way by mistake says so in its own log.
 passphrase_file=""
-password_file=
+password_file=""
+
+# --- an ssh key for the new machine, which is NOT a testing-only thing -------
+#
+# A machine whose only way in is a password typed at its own console cannot be
+# reached when that console is broken - and the console is exactly what breaks
+# when a desktop fails to start. That cost most of an evening here: a login
+# loop on tty1, a password that had silently never been set, and no key,
+# leaving "boot a live ISO and mount the disk" as the only way to find out why.
+#
+# A key in authorized_keys makes the machine reachable from its first boot,
+# which is what any headless or remote install wants regardless of testing.
+authorized_key=""
 
 # sfdisk reads G as GiB, so these are the units it expects.
 ESP_SIZE=1G
@@ -168,6 +180,7 @@ while [[ $# -gt 0 ]]; do
         --unattended) unattended=true ;;
         --passphrase-file) passphrase_file="${2:?--passphrase-file needs a path}"; shift ;;
         --password-file)   password_file="${2:?--password-file needs a path}"; shift ;;
+        --authorized-key)  authorized_key="${2:?--authorized-key needs a path}"; shift ;;
         -h|--help)    sed -n '2,40p' "$0"; exit 0 ;;
         *)            die "unknown argument: $1" ;;
     esac
@@ -413,6 +426,22 @@ base=(
     # prefers GLES but tries Vulkan, and an AMD box should have both.
     mesa-dri
     mesa-vulkan-radeon
+    # XDG_RUNTIME_DIR, WITHOUT WHICH NO WAYLAND COMPOSITOR CAN OPEN A SOCKET.
+    #
+    # Void's /etc/pam.d/system-login already lists pam_dumb_runtime_dir.so -
+    # with a leading `-`, which means "skip silently if missing" - but the
+    # package providing it is not installed by default. elogind registers
+    # sessions perfectly well (loginctl lists them, with a seat) and still does
+    # not create /run/user/$UID, so without this nothing ever does.
+    #
+    # The symptom is qtile starting and exiting about once a second with
+    #
+    #     [server.c:131] failed to add socket to wl_display
+    #
+    # which says nothing about runtime directories at all. Installing this one
+    # package turned a login loop into a running compositor with a
+    # /run/user/1000/wayland-0 socket. Verified in the VM.
+    dumb_runtime_dir
     # A SYSLOG DAEMON, BECAUSE NOTHING WAS COLLECTING LOGS AT ALL. Void's
     # base-system ships none, so every daemon's output goes to the kernel
     # buffer and straight onto the console. On the first VM boot that meant a
@@ -723,6 +752,31 @@ GRUBCFG
 xch "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Void"
 
 # --- user ---------------------------------------------------------------------
+# ENCRYPT_METHOD, WITHOUT WHICH SETTING A PASSWORD SILENTLY DOES NOTHING.
+#
+# Void's /etc/login.defs ships with ENCRYPT_METHOD commented out, and shadow
+# 4.8.1 then falls back to a crypt() call that modern libxcrypt refuses - and
+# does not check the result. chpasswd exits 0, says nothing, and /etc/shadow
+# keeps `jc:!`, which means the account is LOCKED. The install then finishes
+# clean and the machine cannot be logged into at all.
+#
+# Reproduced in the VM: `echo jc:x | chpasswd` exit 0 and no change;
+# `chpasswd -c SHA512` writes a $6$ hash immediately.
+#
+# Set here rather than only passing -c, because the interactive `passwd` path
+# reads the same setting and would fail the same silent way.
+log "Setting the password hashing method"
+if ! $dry_run; then
+    if grep -qE '^ENCRYPT_METHOD' /mnt/etc/login.defs 2>/dev/null; then
+        sed -i 's/^ENCRYPT_METHOD.*/ENCRYPT_METHOD SHA512/' /mnt/etc/login.defs
+    else
+        printf '\n# Set by install_void.sh: unset, shadow silently fails to\n# set any password at all.\nENCRYPT_METHOD SHA512\n' >> /mnt/etc/login.defs
+    fi
+    note "ENCRYPT_METHOD SHA512"
+else
+    note "would set ENCRYPT_METHOD SHA512 in /etc/login.defs"
+fi
+
 log "Creating $username"
 xch "useradd -m -G wheel,audio,video,input,storage,network -s /bin/bash '$username'"
 run_sh "echo '%wheel ALL=(ALL:ALL) ALL' > /mnt/etc/sudoers.d/wheel"
@@ -734,8 +788,10 @@ if ! $dry_run; then
         pw="$(head -n1 "$password_file")"
         log "Setting the $username and root passwords from $password_file"
         # chpasswd reads user:password pairs, which needs no tty.
-        xch "printf '%s:%s\n' '$username' '$pw' | chpasswd"
-        xch "printf 'root:%s\n' '$pw' | chpasswd"
+        # -c SHA512 as well as the login.defs setting: belt and braces on the
+        # one step whose silent failure locks the machine.
+        xch "printf '%s:%s\n' '$username' '$pw' | chpasswd -c SHA512"
+        xch "printf 'root:%s\n' '$pw' | chpasswd -c SHA512"
         unset pw
     else
         echo
@@ -744,6 +800,17 @@ if ! $dry_run; then
         log "Set the root password"
         xchroot /mnt /bin/bash -c "passwd root" < /dev/tty
     fi
+fi
+
+# --- the ssh key ---------------------------------------------------------------
+if [[ -n "$authorized_key" ]]; then
+    [[ -f "$authorized_key" ]] || die "no such key file: $authorized_key"
+    log "Installing an authorized key for $username"
+    run mkdir -p "/mnt/home/$username/.ssh"
+    run cp "$authorized_key" "/mnt/home/$username/.ssh/authorized_keys"
+    run chmod 700 "/mnt/home/$username/.ssh"
+    run chmod 600 "/mnt/home/$username/.ssh/authorized_keys"
+    run chown -R 1000:1000 "/mnt/home/$username/.ssh"
 fi
 
 # --- wifi ---------------------------------------------------------------------
@@ -855,6 +922,26 @@ fi
 # are wiped before they can be read, which is the opposite of helpful on a
 # machine still being built.
 log "Enabling autologin for $username on tty1"
+# AUTOLOGIN ON tty1 ONLY, AND THAT TAKES WORK BECAUSE THE CONF IS SHARED.
+#
+# /etc/sv/agetty-tty2/conf through tty6 are SYMLINKS to ../agetty-tty1/conf.
+# Writing autologin into tty1's conf therefore enabled it on ALL SIX TTYS -
+# six unattended shells, every one of them able to sudo. That is a security
+# bug, not an untidiness, and it was invisible until `loginctl list-sessions`
+# showed jc logged in on tty2, tty3, tty4, tty5 and tty6.
+#
+# So the symlinks are replaced with real files carrying Void's own defaults
+# BEFORE tty1's conf is written. Done first, because once tty1's file has the
+# autologin line, copying it to the others would spread exactly what we are
+# trying to contain.
+log "Giving tty2-tty6 their own getty config (they symlink to tty1's)"
+for _t in 2 3 4 5 6; do
+    xch "if [ -L /etc/sv/agetty-tty$_t/conf ]; then
+             rm -f /etc/sv/agetty-tty$_t/conf
+             printf 'BAUD_RATE=38400\nTERM_NAME=linux\n' > /etc/sv/agetty-tty$_t/conf
+         fi"
+done
+
 write_file /mnt/etc/sv/agetty-tty1/conf <<AGETTY
 # Written by install_void.sh.
 #
@@ -963,6 +1050,28 @@ for s in "${services[@]}"; do
     xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s $RUNSVDIR/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
 
+# --- DNS ----------------------------------------------------------------------
+#
+# xchroot BIND-MOUNTS the live environment's /etc/resolv.conf over the target's
+# so that the chroot can reach the network. When it unmounts, THE MOUNT POINT
+# IS LEFT BEHIND AS AN EMPTY FILE - and NetworkManager will not overwrite a
+# resolv.conf it did not create. The installed machine then comes up with an
+# address, a default route, and ZERO nameservers: everything by IP works,
+# everything by name does not, and nothing says why.
+#
+# Removing it lets resolvconf write a real one on first boot. Verified in the
+# VM: 0 bytes and no resolution, then after removal `nameserver 10.0.2.3` and
+# working DNS.
+log "Clearing the chroot's leftover resolv.conf"
+if ! $dry_run; then
+    if [[ -f /mnt/etc/resolv.conf && ! -s /mnt/etc/resolv.conf ]]; then
+        rm -f /mnt/etc/resolv.conf
+        note "removed an empty /etc/resolv.conf so NetworkManager can write one"
+    fi
+else
+    note "would remove /mnt/etc/resolv.conf if it is empty"
+fi
+
 # =============================================================================
 # Reconfigure - this is what builds the initramfs and grub.cfg
 # =============================================================================
@@ -1045,6 +1154,11 @@ vcheck "a terminal exists"           '[[ -x /mnt/usr/bin/foot ]]'
 vcheck "sshd installed"              '[[ -x /mnt/usr/bin/sshd ]]'
 vcheck "sshd service enabled"        '[[ -L /mnt/etc/runit/runsvdir/default/sshd ]]'
 vcheck "autologin configured"        "grep -q 'autologin $username' /mnt/etc/sv/agetty-tty1/conf"
+# The other five must NOT have it - see the note where they are rewritten.
+vcheck "tty2 does NOT autologin"     "! grep -q autologin /mnt/etc/sv/agetty-tty2/conf"
+vcheck "tty6 does NOT autologin"     "! grep -q autologin /mnt/etc/sv/agetty-tty6/conf"
+vcheck "runtime dir module present"  '[[ -f /mnt/usr/lib/security/pam_dumb_runtime_dir.so ]]'
+vcheck "no stale empty resolv.conf"  '[[ ! -f /mnt/etc/resolv.conf || -s /mnt/etc/resolv.conf ]]'
 vcheck "agetty-tty1 enabled"         '[[ -L /mnt/etc/runit/runsvdir/default/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
 vcheck "qtile config installed"      "[[ -s /mnt/home/$username/.config/qtile/config.py ]]"
@@ -1063,6 +1177,10 @@ vcheck "pam_elogind wired up"        'grep -q pam_elogind /mnt/etc/pam.d/system-
 # The DIRECTORY, not the package: libglvnd supplies libEGL.so.1 with nothing
 # behind it, so checking for the library proves nothing. /usr/lib/dri existing
 # is what says a driver is actually present.
+vcheck "password method is set"      'grep -qE "^ENCRYPT_METHOD SHA512" /mnt/etc/login.defs'
+if [[ -n "$authorized_key" ]]; then
+    vcheck "authorized key installed" "[[ -s /mnt/home/$username/.ssh/authorized_keys ]]"
+fi
 vcheck "mesa DRI drivers present"    'compgen -G "/mnt/usr/lib/dri/*.so"'
 vcheck "a syslog daemon exists"      '[[ -d /mnt/etc/sv/socklog-unix ]]'
 vcheck "syslog enabled"              '[[ -L /mnt/etc/runit/runsvdir/default/socklog-unix ]]'

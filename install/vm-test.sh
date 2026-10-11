@@ -36,7 +36,12 @@ VMDIR="${VMDIR:-$HOME/.cache/void-qtile-vm}"
 DISK="$VMDIR/disk.qcow2"
 NVRAM="$VMDIR/OVMF_VARS.fd"
 DISK_SIZE="${DISK_SIZE:-40G}"
-RAM="${RAM:-4096}"
+# 8 GiB, not 4. The live ISO keeps its root in a RAM overlay, so an install
+# that fetches a 174 MB kernel plus Mesa and the rest competes with the
+# environment running it - and a guest that dies mid-install reboots into the
+# ISO's GRUB menu with no panic on the serial console to explain itself, which
+# is a confusing way to lose twenty minutes. The host has far more to spare.
+RAM="${RAM:-8192}"
 CPUS="${CPUS:-4}"
 
 # Where Fedora keeps the firmware. Named explicitly rather than globbed because
