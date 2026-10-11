@@ -50,6 +50,12 @@ set -euo pipefail
 
 VERSION=0.1
 
+# Where this script lives, so it can find the files that ship beside it -
+# resolved from BASH_SOURCE rather than $PWD, because the installer is as
+# likely to be run as ./install/install_void.sh from the repo root as from
+# inside install/.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # --- repository ---------------------------------------------------------------
 #
 # repo-default redirects to a mirror. Pinning a specific mirror here would age
@@ -304,13 +310,37 @@ base=(
     # than a reinstall. On a machine being set up for a brand new window
     # manager this is not optional equipment.
     openssh
+    # --- what the qtile config actually calls ---------------------------------
+    #
+    # Every one of these is named by a keybinding or an autostart line in
+    # qtile/config.py. A desktop whose volume keys do nothing is not configured,
+    # it is a list of good intentions - so the two files are kept in step
+    # deliberately, and the verification pass checks the binaries exist.
+    #
+    # pipewire already depends on libspa-alsa, so hardware audio needs nothing
+    # further. wireplumber is the session manager and provides wpctl, which is
+    # what the volume keys call.
+    pipewire
+    wireplumber
+    alsa-pipewire
+    brightnessctl
+    grim
+    slurp
+    dunst
+    libnotify
+    # wlr-randr sets the panel scale, which qtile's Wayland backend cannot
+    # express in its config file at all - see the note in qtile/config.py.
+    wlr-randr
 )
 
 # The backend decides what else is needed. Wayland needs nothing beyond
 # qtile-wayland; X11 needs an actual X server and something to start it.
 case "$backend" in
     wayland) base+=(qtile-wayland) ;;
-    x11)     base+=(xorg-minimal xorg-server xinit xrandr xsetroot) ;;
+    # xterm on X11, not by preference: foot is a Wayland client and the config
+    # falls back to xterm there. A config naming a terminal nobody installed
+    # has no way to open a window to fix itself.
+    x11)     base+=(xorg-minimal xorg-server xinit xrandr xsetroot xterm) ;;
 esac
 
 log "Resolving every package name against the repo"
@@ -717,6 +747,21 @@ fi
 PROFILE
 run chown "1000:1000" "/mnt/home/$username/.bash_profile"
 
+# --- the qtile config ---------------------------------------------------------
+#
+# Copied, not symlinked: at this point the repo exists only on the machine
+# running the installer, not on the target. The dotfile link step belongs after
+# the clone; this is just enough to boot into something usable with the keys
+# already right.
+log "Installing the qtile config"
+if [[ -f "$here/qtile/config.py" ]]; then
+    run mkdir -p "/mnt/home/$username/.config/qtile"
+    run cp "$here/qtile/config.py" "/mnt/home/$username/.config/qtile/config.py"
+    run chown -R 1000:1000 "/mnt/home/$username/.config"
+else
+    warn "no qtile/config.py beside the installer - qtile will use its own default"
+fi
+
 # =============================================================================
 # Services
 #
@@ -796,6 +841,12 @@ vcheck "sshd service enabled"        '[[ -L /mnt/var/service/sshd ]]'
 vcheck "autologin configured"        "grep -q 'autologin $username' /mnt/etc/sv/agetty-tty1/conf"
 vcheck "agetty-tty1 enabled"         '[[ -L /mnt/var/service/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
+vcheck "qtile config installed"      "[[ -s /mnt/home/$username/.config/qtile/config.py ]]"
+vcheck "wpctl present (volume keys)" '[[ -x /mnt/usr/bin/wpctl ]]'
+vcheck "brightnessctl present"       '[[ -x /mnt/usr/bin/brightnessctl ]]'
+vcheck "grim+slurp (screenshots)"    '[[ -x /mnt/usr/bin/grim && -x /mnt/usr/bin/slurp ]]'
+vcheck "dunst (notifications)"       '[[ -x /mnt/usr/bin/dunst ]]'
+vcheck "wlr-randr (panel scale)"     '[[ -x /mnt/usr/bin/wlr-randr ]]'
 vcheck "pam_elogind wired up"        'grep -q pam_elogind /mnt/etc/pam.d/system-login'
 
 echo
