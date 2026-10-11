@@ -844,6 +844,43 @@ if ! $dry_run; then
     fi
 fi
 
+# --- ~/.local/bin on PATH -------------------------------------------------------
+#
+# Fedora adds it through /etc/profile.d and Void does not, so anything
+# installed per-user - pipx, cargo --root ~/.local, a downloaded binary, a
+# script of your own - sits there unfound and looks like it failed to install.
+#
+# Written into ~/.bashrc.d rather than ~/.bashrc so the fragments stay separate,
+# matching the layout the other machines in this family use.
+log "Putting ~/.local/bin on PATH"
+run mkdir -p "/mnt/home/$username/.bashrc.d"
+write_file "/mnt/home/$username/.bashrc.d/path.sh" <<'PATHSH'
+# Fedora puts ~/.local/bin on PATH through /etc/profile.d; Void does not.
+case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) PATH="$HOME/.local/bin:$PATH" ;;
+esac
+export PATH
+PATHSH
+
+# Nothing on Void sources a USER bashrc.d - /etc/bash/bashrc.d is system-wide
+# only - so .bashrc is given the loop that reads it.
+write_file "/mnt/home/$username/.bashrc" <<'BASHRC'
+[[ $- != *i* ]] && return
+
+alias ls='ls --color=auto'
+PS1='[\u@\h \W]\$ '
+
+# Nothing on Void sources a user bashrc.d, so this does.
+if [ -d "$HOME/.bashrc.d" ]; then
+    for _f in "$HOME/.bashrc.d"/*.sh; do
+        [ -r "$_f" ] && . "$_f"
+    done
+    unset _f
+fi
+BASHRC
+run chown -R 1000:1000 "/mnt/home/$username/.bashrc.d" "/mnt/home/$username/.bashrc"
+
 # --- the ssh key ---------------------------------------------------------------
 if [[ -n "$authorized_key" ]]; then
     [[ -f "$authorized_key" ]] || die "no such key file: $authorized_key"
@@ -1230,6 +1267,8 @@ vcheck "no stale empty resolv.conf"  '[[ ! -f /mnt/etc/resolv.conf || -s /mnt/et
 vcheck "agetty-tty1 enabled"         '[[ -L /mnt/etc/runit/runsvdir/default/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
 vcheck "cursor is sized for HiDPI"   "grep -q 'wl_xcursor_size' /mnt/home/$username/.config/qtile/config.py"
+vcheck "~/.local/bin on PATH"        "[[ -s /mnt/home/$username/.bashrc.d/path.sh ]]"
+vcheck "bashrc reads bashrc.d"       "grep -q 'bashrc.d' /mnt/home/$username/.bashrc"
 vcheck "qtile config installed"      "[[ -s /mnt/home/$username/.config/qtile/config.py ]]"
 # Each module by name. A split config that is missing one of these does not
 # degrade, it fails to start - and the import error names only the first one
