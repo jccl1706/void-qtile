@@ -1017,6 +1017,21 @@ write_file "/mnt/home/$username/.bash_profile" <<PROFILE
 # Start the desktop on tty1 and NOWHERE ELSE. An ssh login, or any other tty,
 # must fall through to a plain shell: if this ran everywhere, a session that
 # will not start would also break the way back in to fix it.
+# THE CURSOR, WHICH IS INVISIBLE ON THIS PANEL WITHOUT THIS. wlroots defaults
+# to a 24px cursor, and 24px on a 2256x1504 13-inch screen is a few
+# millimetres across - findable only by moving it. There is no qtile setting
+# for this: the Wayland backend reads XCURSOR_* from the ENVIRONMENT at
+# startup, so it has to be set before the compositor runs, not from the config.
+#
+# 32 at scale 1.5 is a 48px bitmap, which is what the niri machine on this same
+# panel settled on. Adwaita because it is the only theme on a fresh install
+# that actually ships cursors - hicolor and locolor do not.
+#
+# Exported here rather than in .bashrc so that every application in the
+# session inherits the same cursor, not just the compositor.
+export XCURSOR_THEME=Adwaita
+export XCURSOR_SIZE=32
+
 if [ "\$(tty)" = "/dev/tty1" ] && [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ]; then
     # LOGGED, BECAUSE A SESSION THAT DIES MUST LEAVE A REASON BEHIND. Without
     # this the compositor's own error scrolls past on tty1 and agetty respawns
@@ -1208,6 +1223,7 @@ vcheck "psutil for the bar widgets"  'compgen -G "/mnt/usr/lib/python3*/site-pac
 vcheck "no stale empty resolv.conf"  '[[ ! -f /mnt/etc/resolv.conf || -s /mnt/etc/resolv.conf ]]'
 vcheck "agetty-tty1 enabled"         '[[ -L /mnt/etc/runit/runsvdir/default/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
+vcheck "cursor is sized for HiDPI"   "grep -q 'XCURSOR_SIZE' /mnt/home/$username/.bash_profile"
 vcheck "qtile config installed"      "[[ -s /mnt/home/$username/.config/qtile/config.py ]]"
 # Each module by name. A split config that is missing one of these does not
 # degrade, it fails to start - and the import error names only the first one
