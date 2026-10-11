@@ -51,9 +51,21 @@ sshd -t || { echo "sshd config is invalid - not starting"; exit 1; }
 echo "==> generating host keys if absent"
 ssh-keygen -A
 
+# RESTART, NOT `up`, AND THAT DISTINCTION COST THREE ROUNDS OF DEBUGGING.
+#
+# `sv up` is a no-op on a service that is already running - and sshd is often
+# already running, started before ssh-keygen -A created any host keys. sshd
+# with no host keys ACCEPTS a connection and then closes it immediately, which
+# the client reports as
+#
+#     kex_exchange_identification: Connection closed by remote host
+#
+# and which looks exactly like a network or firewall problem rather than a
+# daemon holding a stale configuration. Every time this appeared to be fixed by
+# hand, the thing that fixed it was a restart.
 echo "==> starting sshd under runit"
 ln -sfn /etc/sv/sshd /var/service/sshd 2>/dev/null || true
-sv up sshd 2>/dev/null || true
+sv restart sshd 2>/dev/null || sv up sshd 2>/dev/null || true
 sleep 2
 
 # If runit did not manage it, run sshd directly. -D would hold the terminal, so

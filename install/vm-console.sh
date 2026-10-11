@@ -90,6 +90,10 @@ type)
     # out one key at a time. Only what a login prompt needs is mapped.
     for (( i=0; i<${#text}; i++ )); do
         ch="${text:i:1}"
+        # qemu's sendkey takes key NAMES, not characters, so every character
+        # a command might contain has to be spelled out. The table was too
+        # small to type anything with a pipe or a colon in it, which is most
+        # of what a bootstrap command looks like.
         case "$ch" in
             [a-z0-9]) k="$ch" ;;
             [A-Z])    k="shift-$(printf '%s' "$ch" | tr 'A-Z' 'a-z')" ;;
@@ -98,6 +102,31 @@ type)
             "_")      k="shift-minus" ;;
             ".")      k="dot" ;;
             "/")      k="slash" ;;
+            "\\")     k="backslash" ;;
+            "|")      k="shift-backslash" ;;
+            ":")      k="shift-semicolon" ;;
+            ";")      k="semicolon" ;;
+            "=")      k="equal" ;;
+            "+")      k="shift-equal" ;;
+            ",")      k="comma" ;;
+            "<")      k="shift-comma" ;;
+            ">")      k="shift-dot" ;;
+            "&")      k="shift-7" ;;
+            "~")      k="shift-grave_accent" ;;
+            "'")      k="apostrophe" ;;
+            '"')      k="shift-apostrophe" ;;
+            "(")      k="shift-9" ;;
+            ")")      k="shift-0" ;;
+            "[")      k="bracket_left" ;;
+            "]")      k="bracket_right" ;;
+            "!")      k="shift-1" ;;
+            "@")      k="shift-2" ;;
+            "#")      k="shift-3" ;;
+            "$")      k="shift-4" ;;
+            "%")      k="shift-5" ;;
+            "^")      k="shift-6" ;;
+            "*")      k="shift-8" ;;
+            "?")      k="shift-slash" ;;
             *)        echo "  unmapped character: $ch" >&2; continue ;;
         esac
         mon "sendkey $k" >/dev/null

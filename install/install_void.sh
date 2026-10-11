@@ -1062,6 +1062,12 @@ for s in "${services[@]}"; do
     xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s $RUNSVDIR/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
 
+# =============================================================================
+# Reconfigure - this is what builds the initramfs and grub.cfg
+# =============================================================================
+log "Reconfiguring everything (this builds the initramfs and grub.cfg)"
+xch "xbps-reconfigure -fa"
+
 # --- DNS ----------------------------------------------------------------------
 #
 # xchroot BIND-MOUNTS the live environment's /etc/resolv.conf over the target's
@@ -1074,6 +1080,12 @@ done
 # Removing it lets resolvconf write a real one on first boot. Verified in the
 # VM: 0 bytes and no resolution, then after removal `nameserver 10.0.2.3` and
 # working DNS.
+#
+# AFTER THE LAST xchroot, NOT BEFORE IT. An earlier version cleared this
+# before `xbps-reconfigure -fa` - which runs through xchroot, WHICH MOUNTS
+# resolv.conf AGAIN and leaves the same empty file on the way out. The
+# verification check caught it: 111 ok, one FAIL, and the one failure was the
+# fix itself.
 log "Clearing the chroot's leftover resolv.conf"
 if ! $dry_run; then
     if [[ -f /mnt/etc/resolv.conf && ! -s /mnt/etc/resolv.conf ]]; then
@@ -1084,11 +1096,6 @@ else
     note "would remove /mnt/etc/resolv.conf if it is empty"
 fi
 
-# =============================================================================
-# Reconfigure - this is what builds the initramfs and grub.cfg
-# =============================================================================
-log "Reconfiguring everything (this builds the initramfs and grub.cfg)"
-xch "xbps-reconfigure -fa"
 
 # =============================================================================
 # Verify
