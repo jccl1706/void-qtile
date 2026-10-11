@@ -349,6 +349,20 @@ base=(
     git
     vim
     curl
+    # ZRAM, AND NOT AS AN OPTION. This machine has no swap partition and no
+    # hibernation by design, which makes compressed swap in RAM the ONLY memory
+    # valve it has - without it the kernel has nowhere to put an anonymous page
+    # and skips straight to killing something.
+    #
+    # The sibling Fedora installer got this wrong in exactly the way that is
+    # easy to get wrong: zram-generator-defaults was gated behind
+    # `[[ -n "$zram_size" ]]`, and $zram_size was empty by default, so every
+    # ordinary install - and every --swap none install, which is what a machine
+    # that must not hibernate gets - came up with no swap of any kind. Found
+    # months later on a 54 GiB machine with zero swap devices. Unconditional
+    # here, and asserted in the verification pass, so the same mistake cannot
+    # be made quietly twice.
+    zramen
 )
 
 run_sh "XBPS_ARCH=$ARCH xbps-install -Sy -r /mnt -R '$REPO' ${base[*]}"
@@ -468,6 +482,30 @@ run_sh "cat > /mnt/etc/NetworkManager/conf.d/10-wifi-powersave.conf <<'NMCONF'
 wifi.powersave = 2
 NMCONF"
 
+# --- zram ---------------------------------------------------------------------
+#
+# zramen's own defaults are ZRAM_SIZE=25 (percent of RAM) capped by
+# ZRAM_MAX_SIZE=4096 MB. On a 54 GiB machine that cap binds at 4 GB, which is
+# half what the Fedora install on the same hardware ended up with. 8 GB is
+# chosen to match it: enough to be a real valve, small enough that compressing
+# into it never competes seriously with the memory it is protecting.
+#
+# zstd rather than zramen's lz4 default: this CPU compresses zstd fast enough
+# that the better ratio is free, and the whole point of zram is ratio - a valve
+# that holds more per byte of RAM spent.
+#
+# /etc/sv/zramen/conf is a conf_file in the package, so xbps will not overwrite
+# what is written here on update.
+log "Configuring zram"
+run_sh "cat > /mnt/etc/sv/zramen/conf <<'ZRAMCONF'
+# Written by install_void.sh. This machine has NO swap partition and NO
+# hibernation on purpose, so this is its only memory valve.
+export ZRAM_COMP_ALGORITHM=zstd
+export ZRAM_SIZE=25
+export ZRAM_MAX_SIZE=8192
+export ZRAM_PRIORITY=100
+ZRAMCONF"
+
 # =============================================================================
 # Services
 #
@@ -477,7 +515,7 @@ NMCONF"
 # =============================================================================
 log "Enabling runit services"
 
-services=(dbus elogind NetworkManager polkitd)
+services=(dbus elogind NetworkManager polkitd zramen)
 for s in "${services[@]}"; do
     xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s /var/service/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
@@ -528,6 +566,11 @@ vcheck "amd microcode present"       'compgen -G "/mnt/boot/*amd*" || compgen -G
 # shell with no way to open its own root. Checking the file rather than trusting
 # the config that asked for it.
 vcheck "initramfs contains crypt"    'lsinitrd /mnt/boot/initramfs-*.img 2>/dev/null | grep -q crypt'
+# Both halves, because a missing swap device presents as nothing at all - the
+# machine boots and behaves until the day it runs out of memory.
+vcheck "zramen installed"            '[[ -x /mnt/usr/bin/zramen ]]'
+vcheck "zramen service enabled"      '[[ -L /mnt/var/service/zramen ]]'
+vcheck "zram sized, not defaulted"   'grep -q "ZRAM_MAX_SIZE=8192" /mnt/etc/sv/zramen/conf'
 
 echo
 if (( vfail > 0 )); then
@@ -542,5 +585,4 @@ note "To finish:  umount -R /mnt && cryptsetup close cryptroot && reboot"
 echo
 note "Still to do after first boot (not yet written):"
 note "  - qtile and the $backend session"
-note "  - zram, which is the only memory valve on a machine with no swap"
 note "  - the dotfiles"
