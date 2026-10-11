@@ -379,7 +379,26 @@ base=(
     qtile
     foot
     wl-clipboard
+    # FONTS, AND dejavu ALONE IS NOT ENOUGH. A fresh install had seven font
+    # families, all of them DejaVu: every emoji rendered as a tofu box, any
+    # CJK or non-Latin script the same, and pages asking for Arial or Times
+    # fell back to something wider and relaid themselves out. Noto covers the
+    # scripts and the emoji; Liberation is metric-compatible with the
+    # Microsoft faces the web still assumes.
     dejavu-fonts-ttf
+    noto-fonts-ttf
+    noto-fonts-emoji
+    liberation-fonts-ttf
+    # THE PORTALS, which are what a browser uses to open a file. Without
+    # xdg-desktop-portal a Wayland application's "Open File" dialog either
+    # fails or falls back to something broken - it is not a nicety. -gtk
+    # supplies the chooser itself, -wlr supplies screencast so screen sharing
+    # works, and xdg-utils provides xdg-open, which is how every other
+    # application hands a link to the browser.
+    xdg-desktop-portal
+    xdg-desktop-portal-gtk
+    xdg-desktop-portal-wlr
+    xdg-utils
     # SSHD, so that a session that will not start is an inconvenience rather
     # than a reinstall. On a machine being set up for a brand new window
     # manager this is not optional equipment.
@@ -1176,6 +1195,8 @@ vcheck "qtile installed"             '[[ -x /mnt/usr/bin/qtile ]]'
 # missing this passes every other check and then fails at `qtile start`.
 vcheck "qtile wayland backend"       "$([[ $backend == wayland ]] && echo 'compgen -G "/mnt/usr/lib/python3*/site-packages/libqtile/backend/wayland"' || echo true)"
 vcheck "a terminal exists"           '[[ -x /mnt/usr/bin/foot ]]'
+vcheck "emoji font present"          'compgen -G "/mnt/usr/share/fonts/*/NotoColorEmoji*"'
+vcheck "file picker portal present"  '[[ -x /mnt/usr/libexec/xdg-desktop-portal-gtk ]]'
 vcheck "sshd installed"              '[[ -x /mnt/usr/bin/sshd ]]'
 vcheck "sshd service enabled"        '[[ -L /mnt/etc/runit/runsvdir/default/sshd ]]'
 vcheck "autologin configured"        "grep -q 'autologin $username' /mnt/etc/sv/agetty-tty1/conf"
