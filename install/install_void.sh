@@ -67,6 +67,8 @@ ARCH=x86_64
 disk=""
 hostname=void
 username=jc
+# Same default as the sibling Fedora installer, so the two machines agree.
+timezone="America/New_York"
 backend=wayland
 dry_run=false
 preflight_only=false
@@ -173,6 +175,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --disk)       disk="${2:?--disk needs a device}"; shift ;;
         --hostname)   hostname="${2:?--hostname needs a name}"; shift ;;
+        --timezone)   timezone="${2:?--timezone needs a zone, e.g. America/New_York}"; shift ;;
         --user)       username="${2:?--user needs a name}"; shift ;;
         --backend)    backend="${2:?--backend needs wayland or x11}"; shift ;;
         --dry-run)    dry_run=true ;;
@@ -404,6 +407,18 @@ base=(
     xdg-desktop-portal-gtk
     xdg-desktop-portal-wlr
     xdg-utils
+    # dconf, WITHOUT WHICH NO GTK APP IS EVER DARK. A GTK app on Wayland asks
+    # xdg-desktop-portal whether to be light or dark; the portal answers from
+    # gsettings org.gnome.desktop.interface color-scheme; and gsettings needs
+    # dconf to store anything at all. Without it gsettings silently uses a
+    # MEMORY backend - every value reads back as the default, Firefox renders
+    # light, and ~/.config/gtk-3.0/settings.ini looks perfectly correct while
+    # having nothing to do with the decision.
+    dconf
+    # NOTHING WAS SYNCHRONISING THE CLOCK. base-system ships no time daemon, so
+    # a fresh install drifts from the moment it is made - and with no timezone
+    # set either (see below) it was four hours out and reading UTC.
+    chrony
     # SSHD, so that a session that will not start is an inconvenience rather
     # than a reinstall. On a machine being set up for a brand new window
     # manager this is not optional equipment.
@@ -716,6 +731,18 @@ fi
 note "LUKS UUID: $luks_uuid"
 
 run_sh "echo '$hostname' > /mnt/etc/hostname"
+
+# THE TIMEZONE, WHICH NOTHING SETS BY DEFAULT. A Void install with no
+# /etc/localtime runs on UTC and says so in every timestamp - which reads as a
+# clock that is simply wrong rather than a timezone that was never chosen.
+# Found on the real machine four hours ahead of the wall clock.
+log "Setting the timezone to $timezone"
+if [[ -e "/mnt/usr/share/zoneinfo/$timezone" ]] || $dry_run; then
+    run ln -sfn "/usr/share/zoneinfo/$timezone" /mnt/etc/localtime
+    note "$timezone"
+else
+    warn "no such zone in the target: $timezone - leaving the clock on UTC"
+fi
 
 # --- locale -------------------------------------------------------------------
 #
@@ -1140,7 +1167,7 @@ log "Enabling runit services"
 # reboot.
 RUNSVDIR=/etc/runit/runsvdir/default
 services=(dbus elogind NetworkManager polkitd zramen earlyoom sshd agetty-tty1
-          socklog-unix nanoklogd)
+          socklog-unix nanoklogd chronyd)
 for s in "${services[@]}"; do
     xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s $RUNSVDIR/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
@@ -1286,6 +1313,9 @@ vcheck "pam_elogind wired up"        'grep -q pam_elogind /mnt/etc/pam.d/system-
 # behind it, so checking for the library proves nothing. /usr/lib/dri existing
 # is what says a driver is actually present.
 vcheck "password method is set"      'grep -qE "^ENCRYPT_METHOD SHA512" /mnt/etc/login.defs'
+vcheck "timezone is set"             '[[ -L /mnt/etc/localtime ]]'
+vcheck "a time daemon is enabled"    '[[ -L /mnt/etc/runit/runsvdir/default/chronyd ]]'
+vcheck "dconf present (GTK dark)"    '[[ -x /mnt/usr/bin/dconf ]]'
 if [[ -n "$authorized_key" ]]; then
     vcheck "authorized key installed" "[[ -s /mnt/home/$username/.ssh/authorized_keys ]]"
 fi

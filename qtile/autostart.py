@@ -11,6 +11,7 @@ import subprocess
 from libqtile import hook
 
 from env import PICTURES, WAYLAND
+from theme import CURSOR_SIZE, CURSOR_THEME, GTK_THEME
 
 
 @hook.subscribe.startup_once
@@ -48,6 +49,32 @@ def _autostart():
     if WAYLAND:
         subprocess.Popen(
             ["sh", "-c", "wlr-randr --output eDP-1 --scale 1.5 || true"]
+        )
+
+    # THE SETTINGS A GTK APP ACTUALLY READS, which are not the ones in
+    # ~/.config/gtk-3.0/settings.ini.
+    #
+    # A GTK app on Wayland asks xdg-desktop-portal whether to be light or dark.
+    # The portal answers from gsettings org.gnome.desktop.interface. So a
+    # desktop can have a correct settings.ini, a correct GTK theme installed,
+    # and still open Firefox white - which is exactly what happened here.
+    #
+    # Set from THIS process because it has the session bus: dconf cannot commit
+    # without one, and a shell that is not part of the graphical session does
+    # not have it ("Cannot autolaunch D-Bus without X11 $DISPLAY"). Running it
+    # here is the one place the bus is guaranteed.
+    #
+    # Values come from the palette so there is still one source of truth.
+    for key, value in (
+        ("color-scheme", "prefer-dark"),
+        ("gtk-theme", GTK_THEME),
+        ("cursor-theme", CURSOR_THEME),
+        ("cursor-size", str(CURSOR_SIZE)),
+    ):
+        subprocess.Popen(
+            ["gsettings", "set", "org.gnome.desktop.interface", key, value],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
     # Somewhere for the screenshot keys to write.

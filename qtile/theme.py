@@ -99,6 +99,12 @@ URGENT = _c("danger", "#bf616a")
 
 THEME_NAME = _P.get("name", DEFAULT_THEME)
 
+# Read by autostart.py, which pushes them into gsettings - see the note there
+# for why settings.ini alone is not enough.
+GTK_THEME = _P.get("gtk_theme", "Adwaita-dark")
+CURSOR_THEME = _P.get("cursor_theme", "Adwaita")
+CURSOR_SIZE = int(_P.get("cursor_size", "24") or 24)
+
 # --- sizes -------------------------------------------------------------------
 
 FONT = _P.get("font", "DejaVu Sans")
