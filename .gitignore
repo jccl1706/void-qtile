@@ -1,0 +1,9 @@
+# Python bytecode, which qtile/check.py produces every time it runs. These were
+# committed once by a careless `git add -A`; the point of the file is that it
+# cannot happen twice.
+__pycache__/
+*.py[cod]
+
+# Local overrides for one machine, kept out so that the config in git stays the
+# one that describes every machine.
+qtile/*_local.py
