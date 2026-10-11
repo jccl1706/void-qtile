@@ -23,6 +23,15 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONSOLE="$HERE/vm-console.sh"
 
+# The guest fetches this over HTTP from the served install/ directory, so the
+# file has to be here while testing - but it is generated locally and is not
+# tracked. Made now if absent, so a fresh clone can run the tests.
+if [[ ! -f "$HERE/vm-ssh-key.pub" ]]; then
+    [[ -f "$HOME/.ssh/void-vmtest" ]] || ssh-keygen -q -t ed25519 -N "" \
+        -f "$HOME/.ssh/void-vmtest" -C "void-qtile vm test, throwaway"
+    cp "$HOME/.ssh/void-vmtest.pub" "$HERE/vm-ssh-key.pub"
+fi
+
 say() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 
 # A bare Enter first: if a shell is already open the login lines would be run

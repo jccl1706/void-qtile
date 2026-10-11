@@ -7,3 +7,10 @@ __pycache__/
 # Local overrides for one machine, kept out so that the config in git stays the
 # one that describes every machine.
 qtile/*_local.py
+
+# The throwaway VM test key's public half. vm-ssh.sh serves it over HTTP to
+# the guest, so the FILE has to exist in install/ while testing - but it is
+# generated locally from ~/.ssh/void-vmtest and belongs to whoever is running
+# the tests, not to the repository. Nothing is harmed by publishing a public
+# key; it simply has no business being here.
+install/vm-ssh-key.pub
