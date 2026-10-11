@@ -100,17 +100,30 @@ gen_foot() {
 # foot wants colours WITHOUT the leading '#', which is the single most common
 # way a foot colour config silently does nothing. theme.sh strips it.
 
+# THE SECTION NAMES ARE foot 1.28's, NOT THE ONES EVERY EXAMPLE ON THE WEB
+# SHOWS. foot gained light/dark theme switching and renamed [colors] to
+# [colors-dark] / [colors-light]; the cursor colour moved INTO that section as
+# `cursor=`, and selection became two keys rather than a [colors.selection]
+# subsection. The old spelling does not warn, it refuses:
+#
+#     invalid section name: colors
+#     [cursor].color: not a valid option: color
+#
+# initial-color-theme=dark so it starts on the one defined below rather than
+# following whatever it would otherwise ask the system for.
+
 [main]
 font=monospace:size=$(v font_size)
 pad=8x8
+initial-color-theme=dark
 
-[cursor]
-color=$(vx term_cursor_fg) $(vx term_cursor_bg)
-
-[colors]
+[colors-dark]
 alpha=1.0
 foreground=$(vx term_fg)
 background=$(vx term_bg)
+cursor=$(vx term_cursor_fg) $(vx term_cursor_bg)
+selection-foreground=$(vx term_sel_fg)
+selection-background=$(vx term_sel_bg)
 
 regular0=$(vx term_color0)
 regular1=$(vx term_color1)
@@ -129,10 +142,6 @@ bright4=$(vx term_color12)
 bright5=$(vx term_color13)
 bright6=$(vx term_color14)
 bright7=$(vx term_color15)
-
-[colors.selection]
-foreground=$(vx term_sel_fg)
-background=$(vx term_sel_bg)
 EOF
 }
 
