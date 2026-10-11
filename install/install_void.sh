@@ -442,6 +442,18 @@ base=(
     # package turned a login loop into a running compositor with a
     # /run/user/1000/wayland-0 socket. Verified in the VM.
     dumb_runtime_dir
+    # psutil, WHICH TWO WIDGETS IN qtile/screens.py NEED AND NOTHING PULLS IN.
+    # qtile's CPU and Memory widgets import it lazily, so a missing psutil is
+    # not a crash - each widget quietly replaces itself with an error
+    # placeholder and the bar comes up looking almost right:
+    #
+    #     CPU has missing dependencies: psutil.
+    #     Memory has missing dependencies: psutil.
+    #
+    # The qtile package does not depend on it because most configs do not use
+    # those widgets. This one does, which makes it this installer's job - the
+    # same pairing as the volume keys needing wireplumber.
+    python3-psutil
     # A SYSLOG DAEMON, BECAUSE NOTHING WAS COLLECTING LOGS AT ALL. Void's
     # base-system ships none, so every daemon's output goes to the kernel
     # buffer and straight onto the console. On the first VM boot that meant a
@@ -1158,6 +1170,7 @@ vcheck "autologin configured"        "grep -q 'autologin $username' /mnt/etc/sv/
 vcheck "tty2 does NOT autologin"     "! grep -q autologin /mnt/etc/sv/agetty-tty2/conf"
 vcheck "tty6 does NOT autologin"     "! grep -q autologin /mnt/etc/sv/agetty-tty6/conf"
 vcheck "runtime dir module present"  '[[ -f /mnt/usr/lib/security/pam_dumb_runtime_dir.so ]]'
+vcheck "psutil for the bar widgets"  'compgen -G "/mnt/usr/lib/python3*/site-packages/psutil"'
 vcheck "no stale empty resolv.conf"  '[[ ! -f /mnt/etc/resolv.conf || -s /mnt/etc/resolv.conf ]]'
 vcheck "agetty-tty1 enabled"         '[[ -L /mnt/etc/runit/runsvdir/default/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
