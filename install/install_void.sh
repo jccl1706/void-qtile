@@ -98,6 +98,28 @@ run_sh() {
     bash -c "$1"
 }
 
+# WRITE A CONFIG FILE FROM A REAL HEREDOC, which run_sh cannot do.
+#
+# The obvious spelling, `run_sh "cat > file <<'EOF' ... EOF"`, puts the whole
+# heredoc inside a double-quoted bash string - so the first double quote in the
+# CONTENT closes the argument. That is not hypothetical: it silently truncated
+# earlyoom's OPTS= line to `OPTS=-m`, which would have installed a service that
+# either refused to start or ran with none of its thresholds. Any config
+# containing a quote, a $, or a backtick is hostile to that pattern.
+#
+# Contents arrive on stdin from a quoted heredoc at the call site, where bash
+# does no substitution at all and nothing needs escaping.
+write_file() {
+    local dst="$1"
+    if $dry_run; then
+        printf '    %swould write:%s %s\n' "$c_d" "$c_0" "$dst"
+        sed 's/^/        /'
+        return 0
+    fi
+    mkdir -p "$(dirname "$dst")"
+    cat > "$dst"
+}
+
 # Run a command inside the target. xchroot handles /proc, /sys, /dev and
 # resolv.conf, which is why this does not mount them by hand.
 xch() {
@@ -363,6 +385,12 @@ base=(
     # here, and asserted in the verification pass, so the same mistake cannot
     # be made quietly twice.
     zramen
+    # EARLYOOM, the companion to a swapless machine. zram is a valve, not extra
+    # memory: once it is full the kernel has nowhere left to go, and the
+    # in-kernel OOM killer acts so late that the machine has usually already
+    # spent a minute unresponsive. earlyoom watches from userspace and kills
+    # the worst offender while there is still enough memory to do it cleanly.
+    earlyoom
 )
 
 run_sh "XBPS_ARCH=$ARCH xbps-install -Sy -r /mnt -R '$REPO' ${base[*]}"
@@ -413,13 +441,13 @@ run_sh "printf 'cryptroot  UUID=%s  none  luks,discard\\n' '$luks_uuid' > /mnt/e
 # left to detection: detection reads the running system, and the running system
 # is the live ISO, not the target.
 run mkdir -p /mnt/etc/dracut.conf.d
-run_sh "cat > /mnt/etc/dracut.conf.d/10-void-qtile.conf <<'DRACUT'
-hostonly=\"yes\"
-hostonly_cmdline=\"no\"
-add_dracutmodules+=\" crypt btrfs \"
-install_items+=\" /etc/crypttab \"
-compress=\"zstd\"
-DRACUT"
+write_file /mnt/etc/dracut.conf.d/10-void-qtile.conf <<'DRACUT'
+hostonly="yes"
+hostonly_cmdline="no"
+add_dracutmodules+=" crypt btrfs "
+install_items+=" /etc/crypttab "
+compress="zstd"
+DRACUT
 
 # --- GRUB ---------------------------------------------------------------------
 #
@@ -444,14 +472,18 @@ if ! $dry_run; then
 fi
 note "kernel cmdline: $cmdline"
 
-run_sh "cat > /mnt/etc/default/grub <<GRUBCFG
+# UNQUOTED heredoc here, unlike the others, because $cmdline must expand. That
+# is safe with write_file: the expansion happens at this call site, in the
+# script's own syntax, rather than inside a double-quoted string being handed
+# to another shell.
+write_file /mnt/etc/default/grub <<GRUBCFG
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=2
-GRUB_DISTRIBUTOR=\"Void\"
-GRUB_CMDLINE_LINUX_DEFAULT=\"$cmdline\"
-GRUB_TERMINAL_OUTPUT=\"console\"
+GRUB_DISTRIBUTOR="Void"
+GRUB_CMDLINE_LINUX_DEFAULT="$cmdline"
+GRUB_TERMINAL_OUTPUT="console"
 GRUB_DISABLE_OS_PROBER=true
-GRUBCFG"
+GRUBCFG
 
 xch "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Void"
 
@@ -475,12 +507,12 @@ fi
 # instability this chip is known for, and it is set here rather than left as a
 # thing to discover after the first week of flaky wifi.
 run mkdir -p /mnt/etc/NetworkManager/conf.d
-run_sh "cat > /mnt/etc/NetworkManager/conf.d/10-wifi-powersave.conf <<'NMCONF'
+write_file /mnt/etc/NetworkManager/conf.d/10-wifi-powersave.conf <<'NMCONF'
 # 2 = disable power saving. The MT7922/RZ616 in this laptop drops its
 # association with power saving on; this is the documented remedy.
 [connection]
 wifi.powersave = 2
-NMCONF"
+NMCONF
 
 # --- zram ---------------------------------------------------------------------
 #
@@ -497,14 +529,52 @@ NMCONF"
 # /etc/sv/zramen/conf is a conf_file in the package, so xbps will not overwrite
 # what is written here on update.
 log "Configuring zram"
-run_sh "cat > /mnt/etc/sv/zramen/conf <<'ZRAMCONF'
+write_file /mnt/etc/sv/zramen/conf <<'ZRAMCONF'
 # Written by install_void.sh. This machine has NO swap partition and NO
 # hibernation on purpose, so this is its only memory valve.
 export ZRAM_COMP_ALGORITHM=zstd
 export ZRAM_SIZE=25
 export ZRAM_MAX_SIZE=8192
 export ZRAM_PRIORITY=100
-ZRAMCONF"
+ZRAMCONF
+
+# --- earlyoom -----------------------------------------------------------------
+#
+# THE PERCENTAGE DEFAULT IS WRONG ON A MACHINE THIS SIZE. earlyoom defaults to
+# -m 10, and 10% of 54 GiB is 5.4 GB held in reserve - it would start killing
+# things with more memory free than most machines have in total. Upstream's own
+# idiom for this is to pass both forms, because "if you pass both -M and -m,
+# the lower value is used": so -m 10 -M 2097152 reads as "10% of RAM, but at
+# most 2 GiB", and on this machine the 2 GiB cap is what binds.
+#
+# SIGTERM FIRES ONLY WHEN BOTH MEMORY AND SWAP ARE LOW, which is why -s matters
+# here rather than being redundant: with 8 GB of zram, -s 10 means earlyoom
+# holds off until the valve itself is nearly full. SIGKILL follows at half
+# those figures, which is earlyoom's default and is left alone.
+#
+# --avoid PROTECTS THE SESSION. Killing the browser costs a browser; killing
+# qtile costs every window on the desktop at once. dbus and elogind are in
+# there for the same reason - the session does not survive losing them.
+#
+# --prefer NAMES THE USUAL CULPRITS: browsers, electron apps, and a runaway
+# compile, which should die before an editor with unsaved work does.
+#
+# BOTH REGEXES MATCH `comm`, WHICH IS THE FIRST 15 BYTES OF THE PROCESS NAME
+# AND NOTHING MORE. A pattern written against a longer name silently never
+# matches, so everything here is short enough to survive the truncation.
+#
+# --syslog so that a kill is findable afterwards. The service sends stdout to
+# /dev/null, so without it the only record of why something vanished would be
+# gone by the time anybody asked.
+log "Configuring earlyoom"
+run mkdir -p /mnt/etc/sv/earlyoom
+write_file /mnt/etc/sv/earlyoom/conf <<'EOCONF'
+# Written by install_void.sh. Read by /etc/sv/earlyoom/run as the OPTS variable.
+#
+# -m 10 -M 2097152 : 10% of RAM but at most 2 GiB (the lower wins)
+# -s 10            : and only once the zram swap is nearly full too
+OPTS="-m 10 -M 2097152 -s 10 --syslog --avoid '^(qtile|Xwayland|sshd|dbus-daemon|elogind|runsvdir|runit)$' --prefer '^(chromium|firefox|electron|node|cc1plus|rustc|ld)$'"
+EOCONF
 
 # =============================================================================
 # Services
@@ -515,7 +585,7 @@ ZRAMCONF"
 # =============================================================================
 log "Enabling runit services"
 
-services=(dbus elogind NetworkManager polkitd zramen)
+services=(dbus elogind NetworkManager polkitd zramen earlyoom)
 for s in "${services[@]}"; do
     xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s /var/service/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
@@ -571,6 +641,10 @@ vcheck "initramfs contains crypt"    'lsinitrd /mnt/boot/initramfs-*.img 2>/dev/
 vcheck "zramen installed"            '[[ -x /mnt/usr/bin/zramen ]]'
 vcheck "zramen service enabled"      '[[ -L /mnt/var/service/zramen ]]'
 vcheck "zram sized, not defaulted"   'grep -q "ZRAM_MAX_SIZE=8192" /mnt/etc/sv/zramen/conf'
+vcheck "earlyoom installed"          '[[ -x /mnt/usr/bin/earlyoom ]]'
+vcheck "earlyoom service enabled"    '[[ -L /mnt/var/service/earlyoom ]]'
+vcheck "earlyoom capped at 2GiB"     'grep -q "M 2097152" /mnt/etc/sv/earlyoom/conf'
+vcheck "earlyoom protects qtile"     'grep -q "avoid.*qtile" /mnt/etc/sv/earlyoom/conf'
 
 echo
 if (( vfail > 0 )); then
