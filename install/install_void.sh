@@ -392,6 +392,36 @@ base=(
     # wlr-randr sets the panel scale, which qtile's Wayland backend cannot
     # express in its config file at all - see the note in qtile/config.py.
     wlr-randr
+    # MESA, WITHOUT WHICH THE DESKTOP CANNOT START ON ANY MACHINE.
+    #
+    # This is the one the VM earned its keep for. base-system pulls in
+    # libglvnd, so /usr/lib/libEGL.so.1 EXISTS - but that is only the
+    # vendor-neutral dispatcher, with no driver behind it, and /usr/lib/dri
+    # does not exist at all. qtile 0.37.1 then starts, wlroots tries EGL and
+    # then Vulkan, and gets neither:
+    #
+    #     [render/egl.c:208] EGL_EXT_platform_base not supported
+    #     [render/vulkan/vulkan.c:182] ERROR_INCOMPATIBLE_DRIVER (-9)
+    #     [server.c:823] failed to create wlr_renderer
+    #
+    # qtile exits, agetty respawns, and the machine sits in a login loop. It
+    # would have done exactly this on the laptop: amdgpu needs radeonsi out of
+    # mesa-dri for EGL, so this was never a VM-only problem - the VM just found
+    # it before the Framework did.
+    #
+    # mesa-vulkan-radeon is for this machine's AMD GPU specifically; wlroots
+    # prefers GLES but tries Vulkan, and an AMD box should have both.
+    mesa-dri
+    mesa-vulkan-radeon
+    # A SYSLOG DAEMON, BECAUSE NOTHING WAS COLLECTING LOGS AT ALL. Void's
+    # base-system ships none, so every daemon's output goes to the kernel
+    # buffer and straight onto the console. On the first VM boot that meant a
+    # login loop printing elogind messages once a second, over the top of
+    # anything being typed - the console was unusable exactly when it was
+    # needed, and no record of the failure survived the reboot.
+    #
+    # socklog-void provides the runit services; logs land under /var/log/socklog.
+    socklog-void
 )
 
 # The backend decides what else is needed. Wayland needs nothing beyond
@@ -864,6 +894,13 @@ write_file "/mnt/home/$username/.bash_profile" <<PROFILE
 # must fall through to a plain shell: if this ran everywhere, a session that
 # will not start would also break the way back in to fix it.
 if [ "\$(tty)" = "/dev/tty1" ] && [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ]; then
+    # LOGGED, BECAUSE A SESSION THAT DIES MUST LEAVE A REASON BEHIND. Without
+    # this the compositor's own error scrolls past on tty1 and agetty respawns
+    # immediately - a login loop that says nothing about what failed, with the
+    # evidence gone by the time anybody looks.
+    mkdir -p ~/.local/state
+    exec >> ~/.local/state/session.log 2>&1
+    echo "=== session starting \$(date -Is) on \$(tty)"
     $session_cmd
 fi
 PROFILE
@@ -920,7 +957,8 @@ log "Enabling runit services"
 # at boot, it exists in the target, and symlinking into it is what survives the
 # reboot.
 RUNSVDIR=/etc/runit/runsvdir/default
-services=(dbus elogind NetworkManager polkitd zramen earlyoom sshd agetty-tty1)
+services=(dbus elogind NetworkManager polkitd zramen earlyoom sshd agetty-tty1
+          socklog-unix nanoklogd)
 for s in "${services[@]}"; do
     xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s $RUNSVDIR/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
@@ -971,6 +1009,15 @@ vcheck "crypttab written"            '[[ -s /mnt/etc/crypttab ]]'
 vcheck "fstab names @root"           'grep -q "subvol=/\?@root" /mnt/etc/fstab'
 vcheck "fstab names @home"           'grep -q "subvol=/\?@home" /mnt/etc/fstab'
 vcheck "the user exists"             "grep -q '^$username:' /mnt/etc/passwd"
+# EXISTING IS NOT THE SAME AS BEING ABLE TO LOG IN. An account whose shadow
+# field is empty, `!` or `*` cannot authenticate at all, and every other check
+# here would still pass: the user exists, sudo is configured, the session file
+# is in place. Found when chpasswd appeared to succeed in the chroot and ssh
+# then refused the password on the installed system.
+#
+# A real hash starts with $ and an id, as in \$6\$ or \$y\$.
+vcheck "$username can log in"        "grep '^$username:' /mnt/etc/shadow | cut -d: -f2 | grep -q '^[$]'"
+vcheck "root can log in"             "grep '^root:' /mnt/etc/shadow | cut -d: -f2 | grep -q '^[$]'"
 vcheck "wheel may sudo"              '[[ -s /mnt/etc/sudoers.d/wheel ]]'
 vcheck "dbus service enabled"        '[[ -L /mnt/etc/runit/runsvdir/default/dbus ]]'
 vcheck "elogind service enabled"     '[[ -L /mnt/etc/runit/runsvdir/default/elogind ]]'
@@ -1013,6 +1060,13 @@ vcheck "grim+slurp (screenshots)"    '[[ -x /mnt/usr/bin/grim && -x /mnt/usr/bin
 vcheck "dunst (notifications)"       '[[ -x /mnt/usr/bin/dunst ]]'
 vcheck "wlr-randr (panel scale)"     '[[ -x /mnt/usr/bin/wlr-randr ]]'
 vcheck "pam_elogind wired up"        'grep -q pam_elogind /mnt/etc/pam.d/system-login'
+# The DIRECTORY, not the package: libglvnd supplies libEGL.so.1 with nothing
+# behind it, so checking for the library proves nothing. /usr/lib/dri existing
+# is what says a driver is actually present.
+vcheck "mesa DRI drivers present"    'compgen -G "/mnt/usr/lib/dri/*.so"'
+vcheck "a syslog daemon exists"      '[[ -d /mnt/etc/sv/socklog-unix ]]'
+vcheck "syslog enabled"              '[[ -L /mnt/etc/runit/runsvdir/default/socklog-unix ]]'
+vcheck "session is logged"           "grep -q 'session.log' /mnt/home/$username/.bash_profile"
 
 echo
 if (( vfail > 0 )); then

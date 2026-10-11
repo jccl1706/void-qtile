@@ -7,6 +7,9 @@
 #         ./vm-test.sh --reboot                         boot the installed disk
 #         ./vm-test.sh --clean                          throw the disk away
 #         ./vm-test.sh --status                         what exists right now
+#         ./vm-test.sh --gl ...                          virtio-vga-gl, which a
+#                                                        wlroots compositor needs
+#                                                        and which blanks the console
 #         ./vm-test.sh --keep-nvram <iso>                boot an ISO WITHOUT
 #                                                        discarding the installed
 #                                                        system's UEFI boot entry
@@ -50,12 +53,14 @@ die()  { printf '%s==>%s %s\n' "$c_r" "$c_0" "$*" >&2; exit 1; }
 mode=boot
 iso=""
 keep_nvram=false
+use_gl=false
 for a in "$@"; do
     case "$a" in
         --reboot) mode=reboot ;;
         --clean)  mode=clean ;;
         --status) mode=status ;;
         --keep-nvram) keep_nvram=true ;;
+        --gl)         use_gl=true ;;
         -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         *.iso)    iso="$a" ;;
         *)        die "unknown argument: $a" ;;
@@ -87,6 +92,14 @@ command -v qemu-img >/dev/null           || die "qemu-img not installed"
 [[ -w /dev/kvm ]]                        || warn "/dev/kvm not writable - the VM will be SLOW"
 
 mkdir -p "$VMDIR"
+
+if $use_gl; then
+    gpu_args=(-device virtio-vga-gl -display gtk,gl=on,show-cursor=on)
+    warn "GL on: a compositor can start, but the console is not visible and"
+    warn "  screendump will not work. Leave it off unless testing the desktop."
+else
+    gpu_args=(-display gtk,show-cursor=on)
+fi
 
 if [[ ! -f "$DISK" ]]; then
     log "Creating a $DISK_SIZE disk"
@@ -150,9 +163,36 @@ args=(
     -netdev user,id=net0,hostfwd=tcp::2222-:22
     -device virtio-net-pci,netdev=net0
 
-    # An explicit GTK window: this is meant to be watched, and the default
-    # display backend varies with how qemu was built.
-    -display gtk,show-cursor=on
+    # THE GPU, AND THIS IS A GENUINE TRADE RATHER THAN A SETTING.
+    #
+    # wlroots - which qtile's Wayland backend is built on - SKIPS SOFTWARE EGL
+    # RENDERERS and refuses to start rather than falling back, so a compositor
+    # needs a real render node. qemu's default -vga std (bochs-drm) gives
+    # /dev/dri/card0 and NO renderD128, so no compositor can ever start on it.
+    # The same wall was hit testing niri in a VM for the sibling repo.
+    #
+    # But virtio-vga-gl with gl=on renders a BLACK WINDOW on this host, and it
+    # does so for the live ISO too - which proves it is the display and not the
+    # guest. A black screen that looks like a broken desktop but is actually a
+    # broken display sent this round of testing chasing the wrong thing
+    # entirely, and `screendump` does not work with GL either, so the one way
+    # of looking at the console goes with it.
+    #
+    # So it is a choice, made explicitly:
+    #   default   plain VGA. The console is visible and screendump works.
+    #             Right for installing, and for any boot that is read.
+    #   --gl      virtio-vga-gl. Needed for a compositor; costs the console.
+    "${gpu_args[@]}"
+
+    # A MONITOR ON A UNIX SOCKET, which is what makes the guest's console
+    # readable from outside. Without it the only way to see a boot that stops
+    # before sshd starts is to read the window by eye and relay it - and the
+    # obvious alternative, Ctrl+Alt+F2 to reach another tty, does not work:
+    # the host compositor takes that combination before qemu ever sees it.
+    #
+    # With this, `screendump` captures the console to a file and `sendkey`
+    # types into it. install/vm-console.sh wraps both.
+    -monitor "unix:$VMDIR/monitor.sock,server,nowait"
 
     # Serial to a FILE rather than to stdio: stdio belongs to whoever launched
     # this, which may be a background job with no terminal, and a serial
