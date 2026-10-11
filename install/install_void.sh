@@ -790,7 +790,13 @@ else
 fi
 
 log "Creating $username"
-xch "useradd -m -G wheel,audio,video,input,storage,network -s /bin/bash '$username'"
+# socklog IS IN THIS LIST BECAUSE LOGS ARE USELESS IF YOU CANNOT READ THEM.
+# /var/log/socklog is drwxr-s--- root:socklog, so a user outside that group
+# gets "Permission denied" on their own machine's logs and has to reach for
+# sudo every time - which is exactly the friction that stops anybody looking.
+# Found on the real install: socklog was running and collecting, and the logs
+# were unreadable, so the first question asked of them could not be answered.
+xch "useradd -m -G wheel,audio,video,input,storage,network,socklog -s /bin/bash '$username'"
 run_sh "echo '%wheel ALL=(ALL:ALL) ALL' > /mnt/etc/sudoers.d/wheel"
 run chmod 0440 /mnt/etc/sudoers.d/wheel
 
@@ -1204,6 +1210,7 @@ fi
 vcheck "mesa DRI drivers present"    'compgen -G "/mnt/usr/lib/dri/*.so"'
 vcheck "a syslog daemon exists"      '[[ -d /mnt/etc/sv/socklog-unix ]]'
 vcheck "syslog enabled"              '[[ -L /mnt/etc/runit/runsvdir/default/socklog-unix ]]'
+vcheck "user can read the logs"      "grep -q '^socklog:.*$username' /mnt/etc/group"
 vcheck "session is logged"           "grep -q 'session.log' /mnt/home/$username/.bash_profile"
 
 echo
