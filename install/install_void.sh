@@ -349,6 +349,11 @@ base=(
     git
     vim
     curl
+    # xz, WHICH base-system DOES NOT PROVIDE. Found when a .tar.xz would not
+    # extract on the finished machine: `tar (child): xz: Cannot exec`. Plenty
+    # of things ship as .tar.xz - source tarballs, themes, firmware blobs -
+    # and tar fails confusingly rather than saying the compressor is absent.
+    xz
     # ZRAM, AND NOT AS AN OPTION. This machine has no swap partition and no
     # hibernation by design, which makes compressed swap in RAM the ONLY memory
     # valve it has - without it the kernel has nowhere to put an anonymous page
@@ -1017,20 +1022,21 @@ write_file "/mnt/home/$username/.bash_profile" <<PROFILE
 # Start the desktop on tty1 and NOWHERE ELSE. An ssh login, or any other tty,
 # must fall through to a plain shell: if this ran everywhere, a session that
 # will not start would also break the way back in to fix it.
-# THE CURSOR, WHICH IS INVISIBLE ON THIS PANEL WITHOUT THIS. wlroots defaults
-# to a 24px cursor, and 24px on a 2256x1504 13-inch screen is a few
-# millimetres across - findable only by moving it. There is no qtile setting
-# for this: the Wayland backend reads XCURSOR_* from the ENVIRONMENT at
-# startup, so it has to be set before the compositor runs, not from the config.
+# NO XCURSOR_* IS EXPORTED HERE, AND AN EARLIER VERSION DID IT WRONGLY.
 #
-# 32 at scale 1.5 is a 48px bitmap, which is what the niri machine on this same
-# panel settled on. Adwaita because it is the only theme on a fresh install
-# that actually ships cursors - hicolor and locolor do not.
+# It set XCURSOR_THEME and XCURSOR_SIZE from this file, with a comment saying
+# qtile had no setting for the cursor. qtile has had one all along -
+# wl_xcursor_theme and wl_xcursor_size, in its own default_config.py - and its
+# Wayland core does
 #
-# Exported here rather than in .bashrc so that every application in the
-# session inherits the same cursor, not just the compositor.
-export XCURSOR_THEME=Adwaita
-export XCURSOR_SIZE=32
+#     os.environ["XCURSOR_SIZE"] = str(self.qtile.config.wl_xcursor_size)
+#
+# at startup, OVERWRITING whatever the session exported. So the export looked
+# right, survived into the environment where it could be inspected, and was
+# replaced before a cursor was ever drawn. Two values were tried that way
+# before anybody read the source.
+#
+# The cursor is configured in qtile/config.py. One source of truth.
 
 if [ "\$(tty)" = "/dev/tty1" ] && [ -z "\${WAYLAND_DISPLAY:-}" ] && [ -z "\${DISPLAY:-}" ]; then
     # LOGGED, BECAUSE A SESSION THAT DIES MUST LEAVE A REASON BEHIND. Without
@@ -1223,7 +1229,7 @@ vcheck "psutil for the bar widgets"  'compgen -G "/mnt/usr/lib/python3*/site-pac
 vcheck "no stale empty resolv.conf"  '[[ ! -f /mnt/etc/resolv.conf || -s /mnt/etc/resolv.conf ]]'
 vcheck "agetty-tty1 enabled"         '[[ -L /mnt/etc/runit/runsvdir/default/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
-vcheck "cursor is sized for HiDPI"   "grep -q 'XCURSOR_SIZE' /mnt/home/$username/.bash_profile"
+vcheck "cursor is sized for HiDPI"   "grep -q 'wl_xcursor_size' /mnt/home/$username/.config/qtile/config.py"
 vcheck "qtile config installed"      "[[ -s /mnt/home/$username/.config/qtile/config.py ]]"
 # Each module by name. A split config that is missing one of these does not
 # degrade, it fails to start - and the import error names only the first one

@@ -72,6 +72,33 @@ extension_defaults = _theme.WIDGET_DEFAULTS.copy()
 
 wl_input_rules = _inputs.wl_input_rules
 
+# THE CURSOR, AND IT HAS TO BE SET HERE - NOT IN THE ENVIRONMENT.
+#
+# qtile's Wayland core does
+#
+#     os.environ["XCURSOR_SIZE"] = str(self.qtile.config.wl_xcursor_size)
+#
+# at startup, so it OVERWRITES whatever the session exported. Setting
+# XCURSOR_SIZE in .bash_profile looks correct, survives into the session's
+# environment where it can be inspected, and is then silently replaced by
+# qtile's own default of 24 before the cursor is ever drawn. Two different
+# values were tried that way before reading the source.
+#
+# THE SIZE IS A PHYSICAL MEASUREMENT, NOT A PREFERENCE. wlroots asks the theme
+# for size x output scale, so on this 1.5-scaled panel 28 means 42 real pixels.
+#
+# Adwaita - the only cursor theme a fresh Void install has - ships exactly TWO
+# bitmap sizes, 24 and 72. At this scale that offers 36px or 72px and nothing
+# between, and both were tried and rejected as too small and too large.
+#
+# Bibata ships 16, 28, 56 and 88, so 42px downscales cleanly from the 56
+# bitmap instead of blowing up a 24. It is NOT packaged for Void and lives in
+# ~/.local/share/icons, which means it does not survive a reinstall - the same
+# situation as the Reversal icons on the Fedora machine. docs/CURSOR.md says
+# how to put it back.
+wl_xcursor_theme = "Bibata-Modern-Classic"
+wl_xcursor_size = 28
+
 # --- mouse --------------------------------------------------------------------
 
 from libqtile.config import Click, Drag  # noqa: E402
