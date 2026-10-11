@@ -20,24 +20,41 @@ keys = [
     Key([MOD], "f", lazy.window.toggle_fullscreen(), desc="Fullscreen"),
     Key([MOD], "v", lazy.window.toggle_floating(), desc="Float"),
 
-    # --- focus, vim-wise -----------------------------------------------------
-    Key([MOD], "h", lazy.layout.left(), desc="Focus left"),
-    Key([MOD], "l", lazy.layout.right(), desc="Focus right"),
-    Key([MOD], "j", lazy.layout.down(), desc="Focus down"),
-    Key([MOD], "k", lazy.layout.up(), desc="Focus up"),
+    # --- focus, move and resize, ALL ON THE ARROW KEYS -----------------------
+    #
+    # qtile's own default is h/j/k/l, and so was this config until it was
+    # actually used. The arrows say which direction they mean without being
+    # learned, and nothing else here needs them.
+    #
+    # One scheme, three modifiers, so the shape is worth stating once:
+    #
+    #     Mod              move the FOCUS
+    #     Mod + Shift      move the WINDOW
+    #     Mod + Control    GROW the window
+    #
+    # h/j/k/l are now unbound and free for anything else.
+    Key([MOD], "Left", lazy.layout.left(), desc="Focus left"),
+    Key([MOD], "Right", lazy.layout.right(), desc="Focus right"),
+    Key([MOD], "Down", lazy.layout.down(), desc="Focus down"),
+    Key([MOD], "Up", lazy.layout.up(), desc="Focus up"),
     Key([MOD], "Tab", lazy.layout.next(), desc="Focus next"),
 
     # --- move ----------------------------------------------------------------
-    Key([MOD, "shift"], "h", lazy.layout.shuffle_left(), desc="Move left"),
-    Key([MOD, "shift"], "l", lazy.layout.shuffle_right(), desc="Move right"),
-    Key([MOD, "shift"], "j", lazy.layout.shuffle_down(), desc="Move down"),
-    Key([MOD, "shift"], "k", lazy.layout.shuffle_up(), desc="Move up"),
+    Key([MOD, "shift"], "Left", lazy.layout.shuffle_left(), desc="Move left"),
+    Key([MOD, "shift"], "Right", lazy.layout.shuffle_right(), desc="Move right"),
+    Key([MOD, "shift"], "Down", lazy.layout.shuffle_down(), desc="Move down"),
+    Key([MOD, "shift"], "Up", lazy.layout.shuffle_up(), desc="Move up"),
 
     # --- resize --------------------------------------------------------------
-    Key([MOD, "control"], "h", lazy.layout.grow_left(), desc="Grow left"),
-    Key([MOD, "control"], "l", lazy.layout.grow_right(), desc="Grow right"),
-    Key([MOD, "control"], "j", lazy.layout.grow_down(), desc="Grow down"),
-    Key([MOD, "control"], "k", lazy.layout.grow_up(), desc="Grow up"),
+    #
+    # WHICH OF THESE FOUR DO ANYTHING DEPENDS ON THE LAYOUT. Columns treats
+    # left/right as column width and up/down as height within a column;
+    # MonadTall really only has a main pane to grow, so two of the four appear
+    # dead there. That is the layout, not a missing binding.
+    Key([MOD, "control"], "Left", lazy.layout.grow_left(), desc="Grow left"),
+    Key([MOD, "control"], "Right", lazy.layout.grow_right(), desc="Grow right"),
+    Key([MOD, "control"], "Down", lazy.layout.grow_down(), desc="Grow down"),
+    Key([MOD, "control"], "Up", lazy.layout.grow_up(), desc="Grow up"),
     Key([MOD], "n", lazy.layout.normalize(), desc="Reset all sizes"),
 
     # --- layouts -------------------------------------------------------------
