@@ -753,11 +753,22 @@ run chown "1000:1000" "/mnt/home/$username/.bash_profile"
 # running the installer, not on the target. The dotfile link step belongs after
 # the clone; this is just enough to boot into something usable with the keys
 # already right.
+# THE WHOLE DIRECTORY, NOT JUST config.py. The config is split across nine
+# modules - env.py, keys.py, groups.py and the rest - and config.py imports
+# them by bare name. Copying only config.py gives a target whose desktop fails
+# at startup with ModuleNotFoundError, which is a particularly unhelpful way
+# for a fresh install to greet somebody. (It is also the mistake `qtile check`
+# itself makes - see the note in qtile/check.py.)
+#
+# check.py comes along too: it is the only way to validate this config on a
+# machine where qtile is not installed, which includes every machine it gets
+# edited on.
 log "Installing the qtile config"
 if [[ -f "$here/qtile/config.py" ]]; then
     run mkdir -p "/mnt/home/$username/.config/qtile"
-    run cp "$here/qtile/config.py" "/mnt/home/$username/.config/qtile/config.py"
+    run_sh "cp '$here/qtile/'*.py '/mnt/home/$username/.config/qtile/'"
     run chown -R 1000:1000 "/mnt/home/$username/.config"
+    $dry_run || note "copied $(ls "$here/qtile/"*.py | wc -l) modules"
 else
     warn "no qtile/config.py beside the installer - qtile will use its own default"
 fi
@@ -842,6 +853,12 @@ vcheck "autologin configured"        "grep -q 'autologin $username' /mnt/etc/sv/
 vcheck "agetty-tty1 enabled"         '[[ -L /mnt/var/service/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
 vcheck "qtile config installed"      "[[ -s /mnt/home/$username/.config/qtile/config.py ]]"
+# Each module by name. A split config that is missing one of these does not
+# degrade, it fails to start - and the import error names only the first one
+# missing, so checking them individually is what makes the gap obvious.
+for _m in env theme keys groups layouts screens inputs autostart; do
+    vcheck "qtile module $_m.py" "[[ -s /mnt/home/$username/.config/qtile/$_m.py ]]"
+done
 vcheck "wpctl present (volume keys)" '[[ -x /mnt/usr/bin/wpctl ]]'
 vcheck "brightnessctl present"       '[[ -x /mnt/usr/bin/brightnessctl ]]'
 vcheck "grim+slurp (screenshots)"    '[[ -x /mnt/usr/bin/grim && -x /mnt/usr/bin/slurp ]]'
