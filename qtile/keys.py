@@ -12,7 +12,7 @@ agreeing with somebody else's default.
 from libqtile.config import Key
 from libqtile.lazy import lazy
 
-from env import HOME, MOD, TERMINAL
+from env import BROWSER, HOME, MOD, TERMINAL
 
 keys = [
     # --- windows -------------------------------------------------------------
@@ -47,6 +47,7 @@ keys = [
 
     # --- launching -----------------------------------------------------------
     Key([MOD], "Return", lazy.spawn(TERMINAL), desc=f"Terminal ({TERMINAL})"),
+    Key([MOD], "b", lazy.spawn(BROWSER), desc=f"Browser ({BROWSER})"),
     # qtile's own prompt rather than a separate launcher: one less package
     # needed before the desktop can start anything, and replaceable later
     # without touching anything else.

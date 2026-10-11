@@ -23,5 +23,9 @@ MOD = "mod4"  # Super
 # to fix itself.
 TERMINAL = "foot" if WAYLAND else "xterm"
 
+# The browser, named here rather than in keys.py so there is one place to
+# change it. Firefox runs natively on Wayland; nothing needs to force it.
+BROWSER = "firefox"
+
 HOME = os.path.expanduser("~")
 PICTURES = os.path.join(HOME, "Pictures")
