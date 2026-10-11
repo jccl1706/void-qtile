@@ -72,8 +72,26 @@ dry_run=false
 preflight_only=false
 unattended=false
 
-ESP_SIZE=1GiB
-BOOT_SIZE=1GiB
+# --- credentials from files, FOR AUTOMATED TESTING ONLY -----------------------
+#
+# Normally cryptsetup reads the passphrase from the tty itself and this script
+# never touches it: it is not in a variable, not in the process list, and not
+# in the shell history. That is the right design and it is why a non-tty run
+# stops dead with "Nothing to read on input".
+#
+# But a VM test has no tty, and an installer that can only be tested by hand is
+# an installer that stops being tested. So these two options exist, and they
+# are DELIBERATELY ugly to use: a passphrase in a file on disk is exactly what
+# a passphrase must never be on a machine anybody cares about.
+#
+# Using either one prints a warning that names the file, so a real install
+# driven this way by mistake says so in its own log.
+passphrase_file=""
+password_file=
+
+# sfdisk reads G as GiB, so these are the units it expects.
+ESP_SIZE=1G
+BOOT_SIZE=1G
 
 # =============================================================================
 # Output
@@ -148,6 +166,8 @@ while [[ $# -gt 0 ]]; do
         --dry-run)    dry_run=true ;;
         --preflight)  preflight_only=true ;;
         --unattended) unattended=true ;;
+        --passphrase-file) passphrase_file="${2:?--passphrase-file needs a path}"; shift ;;
+        --password-file)   password_file="${2:?--password-file needs a path}"; shift ;;
         -h|--help)    sed -n '2,40p' "$0"; exit 0 ;;
         *)            die "unknown argument: $1" ;;
     esac
@@ -161,6 +181,13 @@ esac
 
 log "install_void.sh v$VERSION  -  backend: $backend"
 
+if [[ -n "$passphrase_file" || -n "$password_file" ]]; then
+    warn "READING CREDENTIALS FROM FILES. This is for automated testing."
+    [[ -n "$passphrase_file" ]] && warn "  LUKS passphrase: $passphrase_file"
+    [[ -n "$password_file" ]]   && warn "  account password: $password_file"
+    warn "  A real install should let cryptsetup and passwd read the tty."
+fi
+
 # =============================================================================
 # Preflight
 #
@@ -173,7 +200,23 @@ log "Preflight"
 fail=0
 check() {
     local what="$1" cmd="$2"
-    if eval "$cmd" >/dev/null 2>&1; then
+    # PIPEFAIL OFF FOR THE DURATION OF A CHECK, and this is not laziness.
+    # These are boolean tests, and the idiomatic way to write one is
+    # `producer | grep -q pattern` - but grep -q exits the instant it matches,
+    # closing the pipe, which hands the producer a SIGPIPE, which pipefail
+    # reports as a FAILED PIPELINE. So the check fails precisely when it
+    # succeeds. That cost thirty seconds per preflight once (a cryptsetup
+    # benchmark fallback that always ran) and then falsely failed
+    # "initramfs contains crypt" on a VM install where the initramfs was
+    # perfectly good. Fixed here, in the helper, so no individual check has to
+    # remember it.
+    local had_pipefail=0
+    [[ -o pipefail ]] && had_pipefail=1
+    set +o pipefail
+    local rc=0
+    eval "$cmd" >/dev/null 2>&1 || rc=$?
+    (( had_pipefail )) && set -o pipefail
+    if (( rc == 0 )); then
         printf '    %sok%s      %s\n' "$c_g" "$c_0" "$what"
     else
         printf '    %sFAIL%s    %s\n' "$c_r" "$c_0" "$what"
@@ -197,9 +240,27 @@ check "xbps-install present"       'command -v xbps-install'
 check "xchroot present"            'command -v xchroot'
 check "xgenfstab present"          'command -v xgenfstab'
 check "cryptsetup present"         'command -v cryptsetup'
-check "sgdisk present"             'command -v sgdisk'
+# sfdisk, NOT sgdisk, AND THAT IS WHAT THE VM TEST FOUND. The Void live base
+# image has no gptfdisk and no parted, so the obvious tools - sgdisk and
+# partprobe - are both absent, and an installer requiring them cannot run on a
+# stock live image at all. sfdisk is util-linux, which base-system pulls in, so
+# it is always there. Verified on the live image 2026-10-10: sgdisk MISSING,
+# partprobe MISSING, sfdisk present.
+check "sfdisk present"             'command -v sfdisk'
 check "mkfs.btrfs present"         'command -v mkfs.btrfs'
 check "xbps signing keys present"  'compgen -G "/var/db/xbps/keys/*.plist"'
+
+# ITS OWN FILES, CHECKED UP FRONT. The qtile config is nine modules beside this
+# script, and if they are absent the install completes and then fails nine
+# verification checks at the very end - after the disk has been wiped, the
+# packages fetched and several minutes spent. On the first VM run that is
+# exactly what happened, because only install_void.sh had been copied to the
+# guest.
+#
+# A missing config is a broken invocation, not a degraded install, so it
+# belongs here with the other things that cost nothing to check first.
+check "qtile config beside it"     '[[ -f "$here/qtile/config.py" ]]'
+check "all nine qtile modules"     '(( $(ls "$here"/qtile/*.py 2>/dev/null | wc -l) >= 9 ))'
 
 # cryptsetup must actually support argon2id, which is the whole basis of the
 # layout decision. An old build that silently falls back to pbkdf2 would hand
@@ -405,13 +466,33 @@ fi
 log "Partitioning $disk"
 
 run wipefs -a "$disk"
-run sgdisk --zap-all "$disk"
-run sgdisk \
-    -n "1:0:+$ESP_SIZE"  -t 1:ef00 -c 1:"EFI System" \
-    -n "2:0:+$BOOT_SIZE" -t 2:8300 -c 2:"boot" \
-    -n "3:0:0"           -t 3:8309 -c 3:"cryptroot" \
-    "$disk"
-run partprobe "$disk"
+
+# sfdisk reads the layout on stdin, one line per partition:
+#
+#     <start>,<size>,<type>     empty start = "straight after the last one"
+#
+# The types are given as GUIDs rather than sfdisk's letter shortcuts, because
+# the shortcuts are a convenience that varies between util-linux versions while
+# a GUID is the thing actually written to the disk. Confirmed written correctly
+# on the live image with `sfdisk --part-type`.
+#
+#     C12A7328-...  EFI System
+#     0FC63DAF-...  Linux filesystem
+#     CA7D7CCB-...  Linux LUKS
+#
+# NO partprobe AFTERWARDS. It lives in parted, which the live image does not
+# have - and it is not needed: sfdisk tells the kernel to re-read the table
+# itself, and `udevadm settle` waits for the device nodes. Verified on the live
+# image: all three of vda1, vda2 and vda3 existed straight after this.
+if $dry_run; then
+    note "would: sfdisk --label gpt $disk  <<  ,$ESP_SIZE,EFI / ,$BOOT_SIZE,Linux / ,,LUKS"
+else
+    sfdisk --label gpt "$disk" <<SFDISK
+,$ESP_SIZE,C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+,$BOOT_SIZE,0FC63DAF-8483-4772-8E79-3D69D8477DE4
+,,CA7D7CCB-63ED-4C53-861C-1742536059CC
+SFDISK
+fi
 run udevadm settle
 
 # =============================================================================
@@ -423,15 +504,46 @@ note "argon2id, which is the point of leaving /boot unencrypted"
 if ! $dry_run; then
     # The passphrase is typed twice by cryptsetup itself, on the tty. It is
     # never passed through this script, never in a variable, never in the
-    # process list - which also means this cannot be run with stdin redirected.
-    cryptsetup luksFormat \
-        --type luks2 \
-        --pbkdf argon2id \
-        --cipher aes-xts-plain64 \
-        --key-size 512 \
-        --hash sha512 \
-        "$p3"
-    cryptsetup open "$p3" cryptroot
+    # process list - which also means a plain run cannot have stdin redirected,
+    # and stops with "Nothing to read on input" if it does.
+    luks_args=(
+        --type luks2
+        --pbkdf argon2id
+        --cipher aes-xts-plain64
+        --key-size 512
+        --hash sha512
+    )
+    if [[ -n "$passphrase_file" ]]; then
+        [[ -f "$passphrase_file" ]] || die "no such passphrase file: $passphrase_file"
+
+        # THE TRAILING NEWLINE IS THE WHOLE PROBLEM, and it cost a VM install.
+        #
+        # `cryptsetup --key-file FILE` reads the ENTIRE FILE as key material,
+        # newline included. A file written the obvious way -
+        #
+        #     printf 'secret\n' > pp
+        #
+        # therefore sets the passphrase to the 7 bytes `secret\n`, while typing
+        # "secret" at the dracut prompt sends 6 bytes, because Enter is the
+        # submit and not part of the passphrase. The volume unlocks from the
+        # file and CANNOT BE UNLOCKED BY HAND - which is a machine that boots
+        # in the test rig and refuses to boot for a person.
+        #
+        # So the first line is taken and piped with NO trailing newline.
+        # `--key-file -` reads stdin to EOF, which is exactly the passphrase.
+        # This does put it in a variable briefly, unlike the tty path; that is
+        # the price of the test-only flag and the reason it stays test-only.
+        _pp="$(head -n1 "$passphrase_file" | tr -d '\r\n')"
+        [[ -n "$_pp" ]] || die "passphrase file is empty: $passphrase_file"
+        printf '%s' "$_pp" | cryptsetup luksFormat "${luks_args[@]}" \
+            --batch-mode --key-file - "$p3"
+        printf '%s' "$_pp" | cryptsetup open --key-file - "$p3" cryptroot
+        note "passphrase taken from $passphrase_file, ${#_pp} characters, no newline"
+        unset _pp
+    else
+        cryptsetup luksFormat "${luks_args[@]}" "$p3"
+        cryptsetup open "$p3" cryptroot
+    fi
 else
     note "would: cryptsetup luksFormat --type luks2 --pbkdf argon2id ... $p3"
     note "would: cryptsetup open $p3 cryptroot"
@@ -587,11 +699,21 @@ run_sh "echo '%wheel ALL=(ALL:ALL) ALL' > /mnt/etc/sudoers.d/wheel"
 run chmod 0440 /mnt/etc/sudoers.d/wheel
 
 if ! $dry_run; then
-    echo
-    log "Set the password for $username"
-    xchroot /mnt /bin/bash -c "passwd '$username'" < /dev/tty
-    log "Set the root password"
-    xchroot /mnt /bin/bash -c "passwd root" < /dev/tty
+    if [[ -n "$password_file" ]]; then
+        [[ -f "$password_file" ]] || die "no such password file: $password_file"
+        pw="$(head -n1 "$password_file")"
+        log "Setting the $username and root passwords from $password_file"
+        # chpasswd reads user:password pairs, which needs no tty.
+        xch "printf '%s:%s\n' '$username' '$pw' | chpasswd"
+        xch "printf 'root:%s\n' '$pw' | chpasswd"
+        unset pw
+    else
+        echo
+        log "Set the password for $username"
+        xchroot /mnt /bin/bash -c "passwd '$username'" < /dev/tty
+        log "Set the root password"
+        xchroot /mnt /bin/bash -c "passwd root" < /dev/tty
+    fi
 fi
 
 # --- wifi ---------------------------------------------------------------------
@@ -770,7 +892,9 @@ if [[ -f "$here/qtile/config.py" ]]; then
     run chown -R 1000:1000 "/mnt/home/$username/.config"
     $dry_run || note "copied $(ls "$here/qtile/"*.py | wc -l) modules"
 else
-    warn "no qtile/config.py beside the installer - qtile will use its own default"
+    # Preflight already refuses this for a real install; a dry run can still
+    # reach here, and saying so is better than silence.
+    warn "no qtile/config.py beside the installer - qtile would use its own default"
 fi
 
 # =============================================================================
@@ -782,9 +906,23 @@ fi
 # =============================================================================
 log "Enabling runit services"
 
+# /etc/runit/runsvdir/default, NOT /var/service, AND THE DIFFERENCE IS WHY
+# NOTHING WAS ENABLED ON THE FIRST VM INSTALL.
+#
+# /var/service is a symlink to ../run/runit/runsvdir/current - a RUNTIME path,
+# pointing at whichever runsvdir the running system has selected. Inside a
+# chroot /run is an empty tmpfs, so that symlink dangles and every `ln` into it
+# fails silently. Seven services came up unenabled: dbus, elogind,
+# NetworkManager, zramen, earlyoom, sshd and agetty-tty1, which between them
+# are the network, the session, the memory valve and the way back in.
+#
+# /etc/runit/runsvdir/default is the persistent directory that runsvdir reads
+# at boot, it exists in the target, and symlinking into it is what survives the
+# reboot.
+RUNSVDIR=/etc/runit/runsvdir/default
 services=(dbus elogind NetworkManager polkitd zramen earlyoom sshd agetty-tty1)
 for s in "${services[@]}"; do
-    xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s /var/service/$s || echo '  (no /etc/sv/$s - skipped)'"
+    xch "[ -d /etc/sv/$s ] && ln -sfn /etc/sv/$s $RUNSVDIR/$s || echo '  (no /etc/sv/$s - skipped)'"
 done
 
 # =============================================================================
@@ -806,7 +944,14 @@ vfail=0
 vcheck() {
     local what="$1" cmd="$2"
     if $dry_run; then printf '    %sskip%s    %s\n' "$c_d" "$c_0" "$what"; return 0; fi
-    if eval "$cmd" >/dev/null 2>&1; then
+    # Same pipefail handling as check() above, for the same reason.
+    local had_pipefail=0
+    [[ -o pipefail ]] && had_pipefail=1
+    set +o pipefail
+    local rc=0
+    eval "$cmd" >/dev/null 2>&1 || rc=$?
+    (( had_pipefail )) && set -o pipefail
+    if (( rc == 0 )); then
         printf '    %sok%s      %s\n' "$c_g" "$c_0" "$what"
     else
         printf '    %sFAIL%s    %s\n' "$c_r" "$c_0" "$what"
@@ -820,13 +965,16 @@ vcheck "grub.cfg written"            '[[ -s /mnt/boot/grub/grub.cfg ]]'
 vcheck "grub.cfg names the LUKS uuid" "grep -q '$luks_uuid' /mnt/boot/grub/grub.cfg"
 vcheck "EFI binary on the ESP"       '[[ -f /mnt/boot/efi/EFI/Void/grubx64.efi ]]'
 vcheck "crypttab written"            '[[ -s /mnt/etc/crypttab ]]'
-vcheck "fstab names @root"           'grep -q "subvol=@root" /mnt/etc/fstab'
-vcheck "fstab names @home"           'grep -q "subvol=@home" /mnt/etc/fstab'
+# xgenfstab writes `subvol=/@root`, WITH A LEADING SLASH, which is how the
+# kernel reports it in /proc/mounts. An earlier version of these two checks
+# looked for `subvol=@root` and failed on a perfectly correct fstab.
+vcheck "fstab names @root"           'grep -q "subvol=/\?@root" /mnt/etc/fstab'
+vcheck "fstab names @home"           'grep -q "subvol=/\?@home" /mnt/etc/fstab'
 vcheck "the user exists"             "grep -q '^$username:' /mnt/etc/passwd"
 vcheck "wheel may sudo"              '[[ -s /mnt/etc/sudoers.d/wheel ]]'
-vcheck "dbus service enabled"        '[[ -L /mnt/var/service/dbus ]]'
-vcheck "elogind service enabled"     '[[ -L /mnt/var/service/elogind ]]'
-vcheck "NetworkManager enabled"      '[[ -L /mnt/var/service/NetworkManager ]]'
+vcheck "dbus service enabled"        '[[ -L /mnt/etc/runit/runsvdir/default/dbus ]]'
+vcheck "elogind service enabled"     '[[ -L /mnt/etc/runit/runsvdir/default/elogind ]]'
+vcheck "NetworkManager enabled"      '[[ -L /mnt/etc/runit/runsvdir/default/NetworkManager ]]'
 vcheck "wifi powersave disabled"     'grep -q "wifi.powersave = 2" /mnt/etc/NetworkManager/conf.d/10-wifi-powersave.conf'
 vcheck "amd microcode present"       'compgen -G "/mnt/boot/*amd*" || compgen -G "/mnt/usr/lib/firmware/amd*"'
 # The initramfs must contain the crypt module, or the machine boots to a dracut
@@ -836,10 +984,10 @@ vcheck "initramfs contains crypt"    'lsinitrd /mnt/boot/initramfs-*.img 2>/dev/
 # Both halves, because a missing swap device presents as nothing at all - the
 # machine boots and behaves until the day it runs out of memory.
 vcheck "zramen installed"            '[[ -x /mnt/usr/bin/zramen ]]'
-vcheck "zramen service enabled"      '[[ -L /mnt/var/service/zramen ]]'
+vcheck "zramen service enabled"      '[[ -L /mnt/etc/runit/runsvdir/default/zramen ]]'
 vcheck "zram sized, not defaulted"   'grep -q "ZRAM_MAX_SIZE=8192" /mnt/etc/sv/zramen/conf'
 vcheck "earlyoom installed"          '[[ -x /mnt/usr/bin/earlyoom ]]'
-vcheck "earlyoom service enabled"    '[[ -L /mnt/var/service/earlyoom ]]'
+vcheck "earlyoom service enabled"    '[[ -L /mnt/etc/runit/runsvdir/default/earlyoom ]]'
 vcheck "earlyoom capped at 2GiB"     'grep -q "M 2097152" /mnt/etc/sv/earlyoom/conf'
 vcheck "earlyoom protects qtile"     'grep -q "avoid.*qtile" /mnt/etc/sv/earlyoom/conf'
 vcheck "qtile installed"             '[[ -x /mnt/usr/bin/qtile ]]'
@@ -848,9 +996,9 @@ vcheck "qtile installed"             '[[ -x /mnt/usr/bin/qtile ]]'
 vcheck "qtile wayland backend"       "$([[ $backend == wayland ]] && echo 'compgen -G "/mnt/usr/lib/python3*/site-packages/libqtile/backend/wayland"' || echo true)"
 vcheck "a terminal exists"           '[[ -x /mnt/usr/bin/foot ]]'
 vcheck "sshd installed"              '[[ -x /mnt/usr/bin/sshd ]]'
-vcheck "sshd service enabled"        '[[ -L /mnt/var/service/sshd ]]'
+vcheck "sshd service enabled"        '[[ -L /mnt/etc/runit/runsvdir/default/sshd ]]'
 vcheck "autologin configured"        "grep -q 'autologin $username' /mnt/etc/sv/agetty-tty1/conf"
-vcheck "agetty-tty1 enabled"         '[[ -L /mnt/var/service/agetty-tty1 ]]'
+vcheck "agetty-tty1 enabled"         '[[ -L /mnt/etc/runit/runsvdir/default/agetty-tty1 ]]'
 vcheck "session starts on tty1 only" "grep -q 'tty1' /mnt/home/$username/.bash_profile"
 vcheck "qtile config installed"      "[[ -s /mnt/home/$username/.config/qtile/config.py ]]"
 # Each module by name. A split config that is missing one of these does not
